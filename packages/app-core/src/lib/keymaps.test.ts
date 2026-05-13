@@ -142,6 +142,11 @@ describe('sequenceTokenFromEvent', () => {
     const event = fakeEvent({ key: '+', code: 'Equal', shiftKey: true })
     expect(sequenceTokenFromEvent(event)).toBe('=')
   })
+
+  it('records bracket keys for Vim buffer sequences', () => {
+    expect(sequenceTokenFromEvent(fakeEvent({ key: '[', code: 'BracketLeft' }))).toBe('[')
+    expect(sequenceTokenFromEvent(fakeEvent({ key: ']', code: 'BracketRight' }))).toBe(']')
+  })
 })
 
 describe('leader keymap definitions', () => {
@@ -149,6 +154,19 @@ describe('leader keymap definitions', () => {
     expect(getKeymapDefinition('vim.leaderSwitchVault')).toMatchObject({
       title: 'Leader: switch vault',
       defaultBinding: 'v'
+    })
+  })
+})
+
+describe('buffer keymap definitions', () => {
+  it('defaults Vim buffer navigation to [b and ]b', () => {
+    expect(getKeymapDefinition('vim.bufferPrevious')).toMatchObject({
+      title: 'Previous buffer',
+      defaultBinding: '[ b'
+    })
+    expect(getKeymapDefinition('vim.bufferNext')).toMatchObject({
+      title: 'Next buffer',
+      defaultBinding: '] b'
     })
   })
 })

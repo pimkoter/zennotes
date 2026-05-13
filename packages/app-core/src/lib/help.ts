@@ -272,6 +272,7 @@ export const HELP_SHORTCUT_SECTIONS: HelpShortcutSection[] = [
       { keys: 'Ctrl-w h / j / k / l', action: 'Move focus', detail: 'Move between sidebar, note list, the active pane’s tab strip, editor, connections, or adjacent editor panes. From tabs, use h / l to switch tabs and j to return to the editor.' },
       { keys: 'Ctrl-w v', action: 'Split right', detail: 'Clone the current tab into a pane to the right.' },
       { keys: 'Ctrl-w s', action: 'Split down', detail: 'Clone the current tab into a pane below.' },
+      { keys: '[b / ]b', action: 'Previous / next buffer', detail: 'Move across open buffers, falling back to recent notes when only one buffer is open.' },
       { keys: 'Space o', action: 'Open buffers', detail: 'Show a searchable list of every open buffer across every pane.' },
       { keys: 'Space f', action: 'Search notes', detail: 'Open the vault-wide note search palette.' },
       { keys: 'Space s t', action: 'Search vault text', detail: 'Fuzzy-search matching text lines across notes in Inbox, Quick Notes, and Archive.' },
@@ -432,7 +433,7 @@ export const HELP_VIM_COMMANDS: HelpExCommand[] = [
   {
     command: ':bn / :bp',
     summary: 'Cycle tabs',
-    detail: 'Move to the next or previous tab, or the next most-recent note when only one tab is open.'
+    detail: 'Move to the next or previous tab, or the next most-recent note when only one tab is open. The default normal-mode keymaps are `]b` and `[b`, and both can be remapped in Settings.'
   },
   {
     command: ':buffers / :ls',

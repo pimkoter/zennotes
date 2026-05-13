@@ -37,6 +37,7 @@ import {
   type KeymapId,
   type KeymapOverrides
 } from '../lib/keymaps'
+import { navigateActiveBuffer } from '../lib/buffer-navigation'
 
 let vimCommandsRegistered = false
 let syncedVimBindings: Partial<Record<KeymapId, string[]>> = {}
@@ -161,6 +162,20 @@ function syncVimKeymaps(overrides: KeymapOverrides): void {
       id: 'vim.paneFocusRight',
       action: 'focusPaneRight',
       bindings: paneMapBindings(overrides, 'vim.paneFocusRight')
+    },
+    {
+      id: 'vim.bufferPrevious',
+      action: 'previousBuffer',
+      bindings: [toVimSequence(getKeymapBinding(overrides, 'vim.bufferPrevious'))].filter(
+        (binding): binding is string => !!binding
+      )
+    },
+    {
+      id: 'vim.bufferNext',
+      action: 'nextBuffer',
+      bindings: [toVimSequence(getKeymapBinding(overrides, 'vim.bufferNext'))].filter(
+        (binding): binding is string => !!binding
+      )
     },
     {
       id: 'vim.foldCurrent',
@@ -428,6 +443,12 @@ function registerVimCommands(): void {
   Vim.defineAction('focusPaneRight', () => {
     focusPaneOrEdgePanel('l')
   })
+  Vim.defineAction('previousBuffer', () => {
+    navigateActiveBuffer(useStore.getState(), -1)
+  })
+  Vim.defineAction('nextBuffer', () => {
+    navigateActiveBuffer(useStore.getState(), 1)
+  })
 
   registerVimNoteCommands()
   registerCommandPaletteEx()
@@ -540,70 +561,8 @@ function registerVimNoteCommands(): void {
   Vim.defineEx('move', 'move', runMoveEx)
   Vim.defineEx('mv', 'mv', runMoveEx)
 
-  const shiftTab = (delta: 1 | -1): void => {
-    const state = useStore.getState()
-    const leaf = getActiveLeaf()
-    if (!leaf) return
-    const current = leaf.activeTab
-
-    // Build a traversal list. Start with every unique tab path across
-    // every pane — vim-style "buffer list". If there's only one (or
-    // none), fall back to every live note in the vault ordered by
-    // recency, so `:bn` / `:bp` always has somewhere to go in a fresh
-    // session where only one note is open.
-    const seen = new Set<string>()
-    const order: string[] = []
-    for (const l of allLeavesFlat(state.paneLayout)) {
-      for (const path of l.tabs) {
-        if (!seen.has(path)) {
-          seen.add(path)
-          order.push(path)
-        }
-      }
-    }
-    if (order.length < 2) {
-      const fallback = state.notes
-        .filter((n) => n.folder !== 'trash')
-        .slice()
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-      for (const n of fallback) {
-        if (!seen.has(n.path)) {
-          seen.add(n.path)
-          order.push(n.path)
-        }
-      }
-    }
-    if (order.length < 2) {
-      // Genuinely nothing else to switch to — create a quick note so
-      // the command still feels responsive in an empty vault.
-      void state.createAndOpen('quick', '', { focusTitle: true })
-      return
-    }
-
-    const baseIdx = current ? order.indexOf(current) : -1
-    const startIdx = baseIdx >= 0 ? baseIdx : 0
-    const nextIdx = (startIdx + delta + order.length) % order.length
-    const nextPath = order[nextIdx]
-
-    // If another pane already has this tab open, focus THAT pane rather
-    // than duplicating the tab — closer to vim's "buffer is visible in
-    // another window, jump there" behavior.
-    const owningLeaf = allLeavesFlat(state.paneLayout).find((l) =>
-      l.tabs.includes(nextPath)
-    )
-    if (owningLeaf && owningLeaf.id !== leaf.id) {
-      void state.focusTabInPane(owningLeaf.id, nextPath)
-      return
-    }
-    if (leaf.tabs.includes(nextPath)) {
-      void state.focusTabInPane(leaf.id, nextPath)
-    } else {
-      void state.openNoteInPane(leaf.id, nextPath)
-    }
-  }
-
-  Vim.defineEx('bnext', 'bn', () => shiftTab(1))
-  Vim.defineEx('bprev', 'bp', () => shiftTab(-1))
+  Vim.defineEx('bnext', 'bn', () => navigateActiveBuffer(useStore.getState(), 1))
+  Vim.defineEx('bprev', 'bp', () => navigateActiveBuffer(useStore.getState(), -1))
   // Vim aliases: :bNext and :bfirst/:blast — rare, skipped.
 
   const closeActiveTabLikeQuit = (): void => {

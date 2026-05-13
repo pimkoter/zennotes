@@ -25,6 +25,7 @@ import {
   dispatchKeyboardContextMenu,
   findTabContextMenuTarget
 } from '../lib/keyboard-context-menu'
+import { navigateActiveBuffer } from '../lib/buffer-navigation'
 
 function escapeForAttr(value: string): string {
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value)
@@ -47,10 +48,14 @@ export function VimNav(): JSX.Element | null {
   const ctrlWPending = useRef(false)
   const jumpTopPending = useRef(0)
   const leaderTextSearchPending = useRef(0)
+  const previousBufferPending = useRef(0)
+  const nextBufferPending = useRef(0)
   const leaderPending = useRef<'leader' | 'leader-l' | null>(null)
   const ctrlWTimer = useRef<ReturnType<typeof setTimeout>>()
   const jumpTopTimer = useRef<ReturnType<typeof setTimeout>>()
   const leaderTextSearchTimer = useRef<ReturnType<typeof setTimeout>>()
+  const previousBufferTimer = useRef<ReturnType<typeof setTimeout>>()
+  const nextBufferTimer = useRef<ReturnType<typeof setTimeout>>()
   const leaderTimer = useRef<ReturnType<typeof setTimeout>>()
 
   // Hint mode needs a render (to mount HintOverlay), so it's state.
@@ -208,9 +213,13 @@ export function VimNav(): JSX.Element | null {
     if (vimMode) return
     ctrlWPending.current = false
     jumpTopPending.current = 0
+    previousBufferPending.current = 0
+    nextBufferPending.current = 0
     if (ctrlWTimer.current) clearTimeout(ctrlWTimer.current)
     if (jumpTopTimer.current) clearTimeout(jumpTopTimer.current)
     if (leaderTextSearchTimer.current) clearTimeout(leaderTextSearchTimer.current)
+    if (previousBufferTimer.current) clearTimeout(previousBufferTimer.current)
+    if (nextBufferTimer.current) clearTimeout(nextBufferTimer.current)
     if (leaderTimer.current) clearTimeout(leaderTimer.current)
     resetLeader()
     setHint(false)
@@ -268,6 +277,43 @@ export function VimNav(): JSX.Element | null {
         e.stopImmediatePropagation()
         jumpNoteHistory(wantsJumpBack ? 'back' : 'forward')
         return
+      }
+
+      if (
+        !leaderPending.current &&
+        !(
+          isEditorFocused(state.editorViewRef) &&
+          isEditorInsertMode(state.editorViewRef, state.vimMode)
+        )
+      ) {
+        const consumeBufferKey = (): void => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        }
+        if (
+          advanceSequence(
+            e,
+            getKeymapBinding(overrides, 'vim.bufferPrevious'),
+            previousBufferPending,
+            previousBufferTimer,
+            () => navigateActiveBuffer(useStore.getState(), -1),
+            consumeBufferKey
+          )
+        ) {
+          return
+        }
+        if (
+          advanceSequence(
+            e,
+            getKeymapBinding(overrides, 'vim.bufferNext'),
+            nextBufferPending,
+            nextBufferTimer,
+            () => navigateActiveBuffer(useStore.getState(), 1),
+            consumeBufferKey
+          )
+        ) {
+          return
+        }
       }
 
       // ------- Ctrl+w pending → resolve panel / pane switch ------------
@@ -714,6 +760,10 @@ export function VimNav(): JSX.Element | null {
     window.addEventListener('keydown', handler, true)
     return () => {
       window.removeEventListener('keydown', handler, true)
+      previousBufferPending.current = 0
+      nextBufferPending.current = 0
+      if (previousBufferTimer.current) clearTimeout(previousBufferTimer.current)
+      if (nextBufferTimer.current) clearTimeout(nextBufferTimer.current)
       resetLeader()
     }
   }, [

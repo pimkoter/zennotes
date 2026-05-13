@@ -47,6 +47,8 @@ export type KeymapId =
   | "vim.paneSplitDown"
   | "vim.historyBack"
   | "vim.historyForward"
+  | "vim.bufferPrevious"
+  | "vim.bufferNext"
   | "vim.hintMode"
   | "vim.goToDefinition"
   | "vim.foldCurrent"
@@ -470,6 +472,28 @@ const KEYMAP_DEFINITIONS: KeymapDefinition[] = [
     defaultBinding: "Ctrl+I",
     vimOnly: true,
     maxTokens: 1,
+  },
+  {
+    id: "vim.bufferPrevious",
+    kind: "sequence",
+    scope: "vim-editor",
+    group: "vim",
+    title: "Previous buffer",
+    description: "Move to the previous open buffer, or a recent note when only one buffer is open.",
+    defaultBinding: "[ b",
+    vimOnly: true,
+    maxTokens: 2,
+  },
+  {
+    id: "vim.bufferNext",
+    kind: "sequence",
+    scope: "vim-editor",
+    group: "vim",
+    title: "Next buffer",
+    description: "Move to the next open buffer, or a recent note when only one buffer is open.",
+    defaultBinding: "] b",
+    vimOnly: true,
+    maxTokens: 2,
   },
   {
     id: "vim.hintMode",
