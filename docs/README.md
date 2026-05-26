@@ -43,6 +43,7 @@ If you are new to ZenNotes, read these first:
 
 - [How ZenNotes Works](./explanation/how-zennotes-works.md)
 - [Security Model](./explanation/security-model.md)
+- [Team Collaboration Plan](./explanation/team-collaboration-plan.md) (proposed — not yet implemented)
 - [Monorepo Architecture](./monorepo-architecture.md)
 - [Web Architecture](./web-architecture.md)
 
