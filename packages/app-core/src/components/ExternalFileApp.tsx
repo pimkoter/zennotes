@@ -137,6 +137,11 @@ export function ExternalFileApp(): JSX.Element {
         ]
       })
       viewRef.current = new EditorView({ state, parent: el })
+      // Focus the editor on mount (and on every edit/preview toggle that
+      // remounts it) so vim motions work immediately, matching the main
+      // editor. Without this the window opens with focus on the body and
+      // no keystrokes reach CodeMirror until the user clicks into the text.
+      viewRef.current.focus()
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [persist, prefs.livePreview, prefs.vimMode]

@@ -316,6 +316,9 @@ export function FloatingNoteApp({ notePath }: { notePath: string }): JSX.Element
         ]
       })
       viewRef.current = new EditorView({ state, parent: el })
+      // Focus the editor on mount (and on every edit/preview toggle that
+      // remounts it) so vim motions work immediately without a click.
+      viewRef.current.focus()
     },
     // Intentionally omit `content?.body` so the CM view isn't rebuilt
     // every keystroke; the sync effect below pushes external changes.

@@ -134,6 +134,35 @@ function paneMapBindings(overrides: KeymapOverrides, actionId: KeymapId): string
   return [...new Set(bindings)]
 }
 
+/**
+ * Clamped half-page scroll for the editor, bound to Ctrl+D / Ctrl+U.
+ *
+ * Replaces CodeMirror-Vim's built-in `<C-d>`/`<C-u>` (`moveByScroll`), which
+ * derives its scroll target from the cursor's pixel coordinates. With live-
+ * preview decorations and folded headings shifting block heights, that math
+ * can resolve to the top of the document, snapping the cursor and viewport
+ * back to line 1 at the end of a note. Moving by display lines and scrolling
+ * by a fixed half-viewport — both clamped to the document bounds — can never
+ * wrap. Mirrors the clamped preview scroll (`scrollPreviewBy`) in VimNav.
+ */
+function editorHalfPage(view: EditorView | undefined, forward: boolean): void {
+  if (!view) return
+  const scroller = view.scrollDOM
+  const half = Math.max(1, Math.round(scroller.clientHeight / 2))
+  const lineHeight = view.defaultLineHeight || 18
+  const steps = Math.max(1, Math.round(half / lineHeight))
+  let range = view.state.selection.main
+  for (let i = 0; i < steps; i++) {
+    const next = view.moveVertically(range, forward)
+    if (next.head === range.head) break // reached the first/last line — stop, never wrap
+    range = next
+  }
+  const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+  const nextTop = Math.max(0, Math.min(maxTop, scroller.scrollTop + (forward ? half : -half)))
+  view.dispatch({ selection: { anchor: range.head } })
+  scroller.scrollTop = nextTop
+}
+
 function syncVimKeymaps(overrides: KeymapOverrides): void {
   const mappings: Array<{ id: KeymapId; action: string; bindings: string[] }> = [
     {
@@ -202,6 +231,20 @@ function syncVimKeymaps(overrides: KeymapOverrides): void {
       id: 'vim.unfoldAll',
       action: 'unfoldAllHeadings',
       bindings: [toVimSequence(getKeymapBinding(overrides, 'vim.unfoldAll'))].filter(
+        (binding): binding is string => !!binding
+      )
+    },
+    {
+      id: 'nav.halfPageDown',
+      action: 'zenHalfPageDown',
+      bindings: [toVimSequence(getKeymapBinding(overrides, 'nav.halfPageDown'))].filter(
+        (binding): binding is string => !!binding
+      )
+    },
+    {
+      id: 'nav.halfPageUp',
+      action: 'zenHalfPageUp',
+      bindings: [toVimSequence(getKeymapBinding(overrides, 'nav.halfPageUp'))].filter(
         (binding): binding is string => !!binding
       )
     }
@@ -678,6 +721,12 @@ function registerVimNoteCommands(): void {
   Vim.defineAction('unfoldHeadingAtCursor', () => runFold(unfoldCode as never))
   Vim.defineAction('foldAllHeadings', () => runFold(foldAll as never))
   Vim.defineAction('unfoldAllHeadings', () => runFold(unfoldAll as never))
+  Vim.defineAction('zenHalfPageDown', (cm: ReturnType<typeof getCM>) =>
+    editorHalfPage((cm as unknown as { cm6?: EditorView }).cm6, true)
+  )
+  Vim.defineAction('zenHalfPageUp', (cm: ReturnType<typeof getCM>) =>
+    editorHalfPage((cm as unknown as { cm6?: EditorView }).cm6, false)
+  )
   Vim.defineEx('fold', 'fold', () => runFold(foldCode as never))
   Vim.defineEx('unfold', 'unfold', () => runFold(unfoldCode as never))
   Vim.defineEx('foldall', 'foldall', () => runFold(foldAll as never))

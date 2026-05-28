@@ -65,6 +65,17 @@ function loadExportPrefs(): ExportPrefs {
   }
 }
 
+// The PDF page is US Letter with 0.7in @page margins (see the <style> block
+// below), so the printable column is 8.5in - 2 * 0.7in = 7.1in. Cap the export
+// reading width at that printable width. Otherwise content that freezes its
+// on-screen container width into fixed pixels — charts, function plots,
+// Mermaid/JSXGraph SVGs — bakes a width up to the 1024px export window, which is
+// wider than the page, then printToPDF re-lays-out at the page width and the
+// frozen-width content is clipped on the sides. (Prose text always reflows, so
+// only such fixed-width content was affected, and only when the reading width
+// exceeded the printable width.)
+const PDF_PRINTABLE_WIDTH = '7.1in'
+
 function applyExportPrefs(prefs: ExportPrefs): void {
   const html = document.documentElement
   html.dataset.theme = 'github-light'
@@ -73,8 +84,14 @@ function applyExportPrefs(prefs: ExportPrefs): void {
   html.style.colorScheme = 'light'
   html.style.setProperty('--z-editor-font-size', `${prefs.editorFontSize}px`)
   html.style.setProperty('--z-editor-line-height', String(prefs.editorLineHeight))
-  html.style.setProperty('--z-preview-max-width', `${prefs.previewMaxWidth}px`)
-  html.style.setProperty('--z-editor-max-width', `${prefs.editorMaxWidth}px`)
+  html.style.setProperty(
+    '--z-preview-max-width',
+    `min(${prefs.previewMaxWidth}px, ${PDF_PRINTABLE_WIDTH})`
+  )
+  html.style.setProperty(
+    '--z-editor-max-width',
+    `min(${prefs.editorMaxWidth}px, ${PDF_PRINTABLE_WIDTH})`
+  )
 
   const setFont = (name: string, value: string | null, fallback: string): void => {
     if (value) html.style.setProperty(name, `"${value}", ${fallback}`)
