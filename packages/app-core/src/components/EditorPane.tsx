@@ -74,6 +74,7 @@ import { codeBlockFlairPlugin } from '../lib/cm-code-block-flair'
 import { tablePlugin, tableVimEntry } from '../lib/cm-table'
 import { wysiwygBlocksPlugin } from '../lib/cm-wysiwyg-blocks'
 import { hashtagExtension } from '../lib/cm-hashtags'
+import { applyHighlight, HIGHLIGHT_COLORS, highlightExtension } from '../lib/cm-highlight'
 import { wikilinkRenderExtension } from '../lib/cm-wikilink-render'
 import { slashCommandSource, slashCommandRender } from '../lib/cm-slash-commands'
 import { dateShortcutSource } from '../lib/cm-date-shortcuts'
@@ -160,6 +161,7 @@ import {
   DocumentIcon,
   FileDownIcon,
   FeedbackIcon,
+  HighlighterIcon,
   ListTreeIcon,
   PanelLeftIcon,
   PanelRightIcon,
@@ -292,6 +294,7 @@ function wysiwygExtensions(): Extension[] {
     tableVimEntry,
     wysiwygBlocksPlugin,
     ...hashtagExtension,
+    ...highlightExtension,
     ...wikilinkRenderExtension
   ]
 }
@@ -3475,12 +3478,46 @@ function AssetTabView({
  * Build the right-click menu shown over the editor text. Uses the live
  * CodeMirror view for clipboard / undo / redo / select-all commands.
  */
+function HighlightSwatch({ color }: { color: string }): JSX.Element {
+  return (
+    <span
+      className="inline-block h-3.5 w-3.5 rounded-[3px] border border-paper-300"
+      style={{ backgroundColor: `rgb(var(--hl-${color}) / 0.7)` }}
+    />
+  )
+}
+
 function buildEditorContextItems(
   view: EditorView | null,
   hasSelection: boolean,
   onAddComment: () => void
 ): ContextMenuItem[] {
   if (!view) return []
+
+  // "Highlight" group (selection only): default (yellow) via `==`, named colors
+  // via `<mark class>`, and a remove action. Shares applyHighlight with ⇧⌘H.
+  const highlightItems: ContextMenuItem[] = hasSelection
+    ? [
+        {
+          label: 'Highlight',
+          hint: formatKeyToken('Mod+Shift+H'),
+          icon: <HighlighterIcon width={14} height={14} />,
+          onSelect: async () => applyHighlight(view, 'yellow')
+        },
+        ...HIGHLIGHT_COLORS.filter((c) => c.id !== 'yellow').map(
+          (c): ContextMenuItem => ({
+            label: `Highlight: ${c.label}`,
+            icon: <HighlightSwatch color={c.id} />,
+            onSelect: async () => applyHighlight(view, c.id)
+          })
+        ),
+        {
+          label: 'Remove highlight',
+          onSelect: async () => applyHighlight(view, 'remove')
+        },
+        { kind: 'separator' }
+      ]
+    : []
 
   const copy = async (): Promise<void> => {
     const sel = view.state.selection.main
@@ -3531,6 +3568,7 @@ function buildEditorContextItems(
       }
     },
     { kind: 'separator' },
+    ...highlightItems,
     { label: 'Cut', hint: formatKeyToken('Mod+X'), disabled: !hasSelection, onSelect: cut },
     { label: 'Copy', hint: formatKeyToken('Mod+C'), disabled: !hasSelection, onSelect: copy },
     { label: 'Paste', hint: formatKeyToken('Mod+V'), onSelect: paste },

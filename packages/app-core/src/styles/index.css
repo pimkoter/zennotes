@@ -2834,6 +2834,63 @@ textarea,
 }
 
 /* Callouts (Obsidian style) */
+/* --- Markdown highlight: `==text==` and `<mark class="hl-*">` ---------- */
+/* One shared palette (R G B triplets) drives the rendered preview/PDF
+   (`.prose-zen mark`), the editor live-preview decoration (`.cm-hl-*`), and the
+   right-click swatches. Translucent so the text keeps the theme foreground and
+   the color reads on both light and dark pages. */
+:root {
+  --hl-yellow: 245 208 70;
+  --hl-orange: 246 153 63;
+  --hl-red: 240 110 110;
+  --hl-pink: 240 120 180;
+  --hl-purple: 176 132 235;
+  --hl-blue: 96 170 240;
+  --hl-green: 120 200 130;
+  --hl-gray: 165 172 184;
+}
+.prose-zen mark,
+.cm-editor .cm-hl {
+  background-color: rgb(var(--hl-yellow) / 0.34);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0.05em 0.15em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.prose-zen mark.hl-yellow,
+.cm-editor .cm-hl-yellow {
+  background-color: rgb(var(--hl-yellow) / 0.34);
+}
+.prose-zen mark.hl-orange,
+.cm-editor .cm-hl-orange {
+  background-color: rgb(var(--hl-orange) / 0.34);
+}
+.prose-zen mark.hl-red,
+.cm-editor .cm-hl-red {
+  background-color: rgb(var(--hl-red) / 0.32);
+}
+.prose-zen mark.hl-pink,
+.cm-editor .cm-hl-pink {
+  background-color: rgb(var(--hl-pink) / 0.32);
+}
+.prose-zen mark.hl-purple,
+.cm-editor .cm-hl-purple {
+  background-color: rgb(var(--hl-purple) / 0.34);
+}
+.prose-zen mark.hl-blue,
+.cm-editor .cm-hl-blue {
+  background-color: rgb(var(--hl-blue) / 0.32);
+}
+.prose-zen mark.hl-green,
+.cm-editor .cm-hl-green {
+  background-color: rgb(var(--hl-green) / 0.32);
+}
+.prose-zen mark.hl-gray,
+.cm-editor .cm-hl-gray {
+  background-color: rgb(var(--hl-gray) / 0.34);
+}
+
 .prose-zen .callout {
   margin: var(--z-prose-block-gap) 0;
   padding: 0.8em 1em;
