@@ -13,7 +13,7 @@ import type {
 import { IPC } from '@shared/ipc'
 import type { AppConfigPortable } from '@shared/app-config'
 import type { CustomTheme } from '@shared/custom-themes'
-import type { Snippet } from '@shared/snippets'
+import type { Override } from '@shared/overrides'
 import type {
   AppUpdateState,
   AssetMeta,
@@ -524,14 +524,14 @@ const api: ZenBridge = {
     return () => ipcRenderer.removeListener(IPC.CUSTOM_THEMES_ON_CHANGE, listener)
   },
 
-  listSnippets: (): Promise<Snippet[]> => ipcRenderer.invoke(IPC.SNIPPETS_LIST),
-  revealSnippetsDir: (name?: string): Promise<void> =>
-    ipcRenderer.invoke(IPC.SNIPPETS_REVEAL, name),
-  deleteSnippet: (name: string): Promise<void> => ipcRenderer.invoke(IPC.SNIPPETS_DELETE, name),
-  onSnippetsChange: (cb: (next: Snippet[]) => void): (() => void) => {
-    const listener = (_: unknown, next: Snippet[]): void => cb(next)
-    ipcRenderer.on(IPC.SNIPPETS_ON_CHANGE, listener)
-    return () => ipcRenderer.removeListener(IPC.SNIPPETS_ON_CHANGE, listener)
+  listOverrides: (): Promise<Override[]> => ipcRenderer.invoke(IPC.OVERRIDES_LIST),
+  revealOverridesDir: (name?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.OVERRIDES_REVEAL, name),
+  deleteOverride: (name: string): Promise<void> => ipcRenderer.invoke(IPC.OVERRIDES_DELETE, name),
+  onOverridesChange: (cb: (next: Override[]) => void): (() => void) => {
+    const listener = (_: unknown, next: Override[]): void => cb(next)
+    ipcRenderer.on(IPC.OVERRIDES_ON_CHANGE, listener)
+    return () => ipcRenderer.removeListener(IPC.OVERRIDES_ON_CHANGE, listener)
   }
 }
 

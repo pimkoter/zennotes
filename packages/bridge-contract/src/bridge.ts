@@ -49,7 +49,7 @@ import type {
 } from '@zennotes/shared-domain/mcp-clients'
 import type { AppConfigPortable } from '@zennotes/shared-domain/app-config'
 import type { CustomTheme } from '@zennotes/shared-domain/custom-themes'
-import type { Snippet } from '@zennotes/shared-domain/snippets'
+import type { Override } from '@zennotes/shared-domain/overrides'
 
 export interface ZenCapabilities {
   supportsUpdater: boolean
@@ -271,15 +271,15 @@ export interface ZenBridge {
   createCustomTheme(input: { name?: string }): Promise<string | null>
   /** Subscribe to changes in the themes directory (file added/edited/removed). */
   onCustomThemesChange(cb: (next: CustomTheme[]) => void): () => void
-  /** CSS snippets from `~/.config/zennotes/snippets/*.css`. Empty on web. */
-  listSnippets(): Promise<Snippet[]>
-  /** Reveal the snippets directory — or a specific snippet file when a name is
+  /** CSS overrides from `~/.config/zennotes/overrides/*.css`. Empty on web. */
+  listOverrides(): Promise<Override[]>
+  /** Reveal the overrides directory — or a specific override file when a name is
    *  given (creating the dir if needed). */
-  revealSnippetsDir(name?: string): Promise<void>
-  /** Delete a snippet file (`<name>`) from the snippets directory. */
-  deleteSnippet(name: string): Promise<void>
-  /** Subscribe to changes in the snippets directory. */
-  onSnippetsChange(cb: (next: Snippet[]) => void): () => void
+  revealOverridesDir(name?: string): Promise<void>
+  /** Delete a override file (`<name>`) from the overrides directory. */
+  deleteOverride(name: string): Promise<void>
+  /** Subscribe to changes in the overrides directory. */
+  onOverridesChange(cb: (next: Override[]) => void): () => void
 }
 
 let installedBridge: ZenBridge | null = null

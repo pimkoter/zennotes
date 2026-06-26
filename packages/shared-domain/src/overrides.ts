@@ -1,15 +1,15 @@
 /**
- * CSS snippets — small user-authored `.css` files in
- * `~/.config/zennotes/snippets/` that the user toggles on/off and that layer on
+ * CSS overrides — small user-authored `.css` files in
+ * `~/.config/zennotes/overrides/` that the user toggles on/off and that layer on
  * top of *whichever* theme is active (built-in or custom). The enabled set is
- * persisted as a portable config map (`[snippets]` in config.toml).
+ * persisted as a portable config map (`[overrides]` in config.toml).
  *
- * To override a theme token from a snippet, target `:root[data-theme] { … }` —
- * snippets are injected last, so that selector wins over both a built-in's
+ * To override a theme token from a override, target `:root[data-theme] { … }` —
+ * overrides are injected last, so that selector wins over both a built-in's
  * `:root[data-theme="…"]` block and a custom theme's `:root {}`.
  */
 
-export interface Snippet {
+export interface Override {
   /** Filename including `.css`, e.g. `punchy-accent.css`. Stable id. */
   name: string
   /** Raw CSS text, injected verbatim when enabled. */
@@ -19,11 +19,11 @@ export interface Snippet {
 }
 
 /**
- * Whether a snippet is enabled, per the persisted `[snippets]` map. Only enabled
- * snippets are stored (`"name.css" = "on"`); a missing key means off. Tolerant
+ * Whether a override is enabled, per the persisted `[overrides]` map. Only enabled
+ * overrides are stored (`"name.css" = "on"`); a missing key means off. Tolerant
  * of a hand-edited config that wrote an explicit off-ish value.
  */
-export function isSnippetEnabled(
+export function isOverrideEnabled(
   enabled: Record<string, string> | undefined,
   name: string
 ): boolean {

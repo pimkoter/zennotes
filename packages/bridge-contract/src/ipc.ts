@@ -128,10 +128,10 @@ export const IPC = {
   CUSTOM_THEMES_DELETE: 'custom-themes:delete',
   CUSTOM_THEMES_CREATE: 'custom-themes:create',
   CUSTOM_THEMES_ON_CHANGE: 'custom-themes:on-change',
-  SNIPPETS_LIST: 'snippets:list',
-  SNIPPETS_REVEAL: 'snippets:reveal',
-  SNIPPETS_DELETE: 'snippets:delete',
-  SNIPPETS_ON_CHANGE: 'snippets:on-change'
+  OVERRIDES_LIST: 'overrides:list',
+  OVERRIDES_REVEAL: 'overrides:reveal',
+  OVERRIDES_DELETE: 'overrides:delete',
+  OVERRIDES_ON_CHANGE: 'overrides:on-change'
 } as const
 
 export interface TikzRenderResponse {
@@ -168,7 +168,7 @@ export interface CliInstallStatus {
    *  $PATH. False means we'd install but the binary wouldn't be
    *  callable until the user updates their shell config. */
   targetOnPath: boolean
-  /** Shell snippet the user can paste into ~/.zshrc / ~/.bashrc to
+  /** Shell override the user can paste into ~/.zshrc / ~/.bashrc to
    *  put the chosen directory on PATH. Null when targetOnPath is true
    *  or when nothing helpful applies. */
   pathHint: string | null
@@ -504,7 +504,7 @@ export interface ImportedAsset {
   name: string
   /** Vault-relative path to the imported asset, POSIX-style. */
   path: string
-  /** Markdown snippet to insert into the note. */
+  /** Markdown override to insert into the note. */
   markdown: string
   kind: ImportedAssetKind
 }

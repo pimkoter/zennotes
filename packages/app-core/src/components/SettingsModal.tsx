@@ -25,7 +25,7 @@ import {
   type McpInstructionsPayload,
   type McpServerRuntime
 } from '@shared/mcp-clients'
-import { useStore, refreshCustomThemes, refreshSnippets } from '../store'
+import { useStore, refreshCustomThemes, refreshOverrides } from '../store'
 import type { LineNumberMode, WhichKeyHintMode } from '../store'
 import type { KeymapDefinition, KeymapId, KeymapOverrides } from '../lib/keymaps'
 import {
@@ -41,7 +41,7 @@ import { resolveAuto, THEMES, type ThemeFamily, type ThemeMode } from '../lib/th
 import { customThemeSlugFromId } from '../lib/custom-themes'
 import { TrashIcon, ExternalIcon } from './icons'
 import { customThemeSupportsMode, type CustomTheme } from '@shared/custom-themes'
-import { isSnippetEnabled, type Snippet } from '@shared/snippets'
+import { isOverrideEnabled, type Override } from '@shared/overrides'
 import { hasSystemFontAccess, listSystemFonts } from '../lib/system-fonts'
 import {
   DEFAULT_SYSTEM_FOLDER_LABELS,
@@ -455,9 +455,9 @@ export function SettingsModal(): JSX.Element {
   const themeMode = useStore((s) => s.themeMode)
   const setTheme = useStore((s) => s.setTheme)
   const customThemes = useStore((s) => s.customThemes)
-  const snippets = useStore((s) => s.snippets)
-  const enabledSnippets = useStore((s) => s.enabledSnippets)
-  const setSnippetEnabled = useStore((s) => s.setSnippetEnabled)
+  const overrides = useStore((s) => s.overrides)
+  const enabledOverrides = useStore((s) => s.enabledOverrides)
+  const setOverrideEnabled = useStore((s) => s.setOverrideEnabled)
   const editorFontSize = useStore((s) => s.editorFontSize)
   const setEditorFontSize = useStore((s) => s.setEditorFontSize)
   const editorLineHeight = useStore((s) => s.editorLineHeight)
@@ -814,24 +814,24 @@ export function SettingsModal(): JSX.Element {
     }
   }
 
-  const revealSnippetsFolder = (): void => {
-    void window.zen.revealSnippetsDir?.()
+  const revealOverridesFolder = (): void => {
+    void window.zen.revealOverridesDir?.()
   }
 
-  const revealSnippet = (snippet: Snippet): void => {
-    void window.zen.revealSnippetsDir?.(snippet.name)
+  const revealOverride = (override: Override): void => {
+    void window.zen.revealOverridesDir?.(override.name)
   }
 
-  const removeSnippet = async (snippet: Snippet): Promise<void> => {
+  const removeOverride = async (override: Override): Promise<void> => {
     const ok = await confirmApp({
-      title: `Remove “${snippet.name}”?`,
-      description: `This deletes ${snippet.name} from your snippets folder. You can add it back any time.`,
+      title: `Remove “${override.name}”?`,
+      description: `This deletes ${override.name} from your overrides folder. You can add it back any time.`,
       confirmLabel: 'Remove',
       danger: true
     })
     if (!ok) return
-    await window.zen.deleteSnippet?.(snippet.name)
-    refreshSnippets()
+    await window.zen.deleteOverride?.(override.name)
+    refreshOverrides()
   }
 
   const ref = useRef<HTMLDivElement | null>(null)
@@ -1154,41 +1154,41 @@ export function SettingsModal(): JSX.Element {
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div className="text-xs font-medium uppercase tracking-[0.18em] text-ink-500">
-                    Snippets
+                    Overrides
                   </div>
                   <button
-                    onClick={revealSnippetsFolder}
+                    onClick={revealOverridesFolder}
                     className="text-xs text-ink-500 transition-colors hover:text-ink-800"
                   >
-                    Open snippets folder
+                    Open overrides folder
                   </button>
                 </div>
-                {snippets.length === 0 ? (
+                {overrides.length === 0 ? (
                   <p className="rounded-xl border border-dashed border-paper-300/70 px-3 py-3 text-xs leading-5 text-ink-500">
                     Drop a <span className="font-mono text-ink-700">.css</span> file into your
-                    snippets folder to tweak any theme, then toggle it on here. Snippets layer on top
+                    overrides folder to tweak any theme, then toggle it on here. Overrides layer on top
                     of whichever theme is active.
                   </p>
                 ) : (
                   <div className="flex flex-col gap-1.5">
-                    {snippets.map((snippet) => (
+                    {overrides.map((override) => (
                       <div
-                        key={snippet.name}
+                        key={override.name}
                         className="group relative flex items-center rounded-xl border border-paper-300/70 bg-paper-100/70 px-3 py-2 pr-16"
                       >
                         <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
                           <input
                             type="checkbox"
-                            checked={isSnippetEnabled(enabledSnippets, snippet.name)}
-                            disabled={!!snippet.error}
-                            onChange={(e) => setSnippetEnabled(snippet.name, e.target.checked)}
+                            checked={isOverrideEnabled(enabledOverrides, override.name)}
+                            disabled={!!override.error}
+                            onChange={(e) => setOverrideEnabled(override.name, e.target.checked)}
                             className="h-4 w-4 shrink-0 accent-accent"
                           />
                           <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-700">
-                            {snippet.name}
+                            {override.name}
                           </span>
-                          {snippet.error && (
-                            <span className="shrink-0 text-xs text-danger" title={snippet.error}>
+                          {override.error && (
+                            <span className="shrink-0 text-xs text-danger" title={override.error}>
                               error
                             </span>
                           )}
@@ -1196,8 +1196,8 @@ export function SettingsModal(): JSX.Element {
                         <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
                           <button
                             type="button"
-                            onClick={() => revealSnippet(snippet)}
-                            aria-label={`Reveal ${snippet.name} in file manager`}
+                            onClick={() => revealOverride(override)}
+                            aria-label={`Reveal ${override.name} in file manager`}
                             title="Reveal file"
                             className="flex h-6 w-6 items-center justify-center rounded-md text-ink-400 transition-colors hover:bg-paper-300/70 hover:text-ink-800 focus:opacity-100 focus:outline-none"
                           >
@@ -1205,9 +1205,9 @@ export function SettingsModal(): JSX.Element {
                           </button>
                           <button
                             type="button"
-                            onClick={() => void removeSnippet(snippet)}
-                            aria-label={`Remove ${snippet.name}`}
-                            title="Remove snippet"
+                            onClick={() => void removeOverride(override)}
+                            aria-label={`Remove ${override.name}`}
+                            title="Remove override"
                             className="flex h-6 w-6 items-center justify-center rounded-md text-ink-400 transition-colors hover:bg-paper-300/70 hover:text-danger focus:opacity-100 focus:outline-none"
                           >
                             <TrashIcon width={13} height={13} />
@@ -1313,10 +1313,10 @@ export function SettingsModal(): JSX.Element {
           keywords: ['table', 'tables', 'wysiwyg', 'grid', 'vim', 'plain text', 'source']
         },
         {
-          id: 'markdown-snippets',
+          id: 'markdown-overrides',
           title: 'Markdown snippets',
           description: 'Auto-close markdown delimiters as you type (** then Space, ``` then Enter).',
-          keywords: ['snippets', 'auto close', 'autoclose', 'auto-pair', 'brackets', 'markdown', 'completion']
+          keywords: ['overrides', 'auto close', 'autoclose', 'auto-pair', 'brackets', 'markdown', 'completion']
         },
         {
           id: 'note-tabs',
@@ -1515,7 +1515,7 @@ export function SettingsModal(): JSX.Element {
           searchIds: [
             'live-preview',
             'render-tables',
-            'markdown-snippets',
+            'markdown-overrides',
             'note-tabs',
             'wrap-note-tabs',
             'word-wrap',
@@ -1548,7 +1548,7 @@ export function SettingsModal(): JSX.Element {
               label="Markdown snippets"
               description="Auto-close markdown as you type: ** / __ / ~~ / ` / == / [[ / %% then Space wrap the cursor, and ``` / ~~~ / $$ then Enter expand a fenced block. In Vim mode this only applies in insert mode."
               value={markdownSnippets}
-              settingId="markdown-snippets"
+              settingId="markdown-overrides"
               onChange={setMarkdownSnippets}
             />
             <ToggleRow

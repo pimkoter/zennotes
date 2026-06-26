@@ -275,9 +275,9 @@ const MAP_TABLE_FIELDS: Partial<Record<PortablePrefKey, MapTableField>> = {
     comment: ['Kanban column title overrides, keyed by "<groupBy>:<columnId>".'],
     example: '"status:todo" = "To Do"'
   },
-  enabledSnippets: {
-    table: 'snippets',
-    comment: ['Enabled CSS snippets — list the filenames you want active.'],
+  enabledOverrides: {
+    table: 'overrides',
+    comment: ['Enabled CSS overrides — list the filenames you want active.'],
     example: '"focus.css" = "on"'
   }
 }

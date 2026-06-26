@@ -61,7 +61,7 @@ import {
 import { DEFAULT_THEME_ID, THEMES, type ThemeFamily, type ThemeMode } from './lib/themes'
 import { isCustomThemeId } from './lib/custom-themes'
 import { customThemeSlugFromId, type CustomTheme } from '@shared/custom-themes'
-import type { Snippet } from '@shared/snippets'
+import type { Override } from '@shared/overrides'
 import { formatMarkdown } from './lib/format-markdown'
 import { confirmMoveToTrash } from './lib/confirm-trash'
 import { confirmApp } from './lib/confirm-requests'
@@ -344,8 +344,8 @@ interface Prefs {
    *  (like `set clipboard=unnamed`). */
   vimYankToClipboard: boolean
   keymapOverrides: KeymapOverrides
-  /** Enabled CSS snippets, keyed by filename (e.g. `"focus.css": "on"`). Persisted. */
-  enabledSnippets: Record<string, string>
+  /** Enabled CSS overrides, keyed by filename (e.g. `"focus.css": "on"`). Persisted. */
+  enabledOverrides: Record<string, string>
   /** When true, pressing the leader key shows the next available Vim-style actions. */
   whichKeyHints: boolean
   /** Whether leader hints auto-hide after a timeout or stay open until dismissed. */
@@ -519,7 +519,7 @@ export const DEFAULT_PREFS: Prefs = {
   themeId: DEFAULT_THEME_ID,
   themeFamily: 'gruvbox',
   themeMode: 'dark',
-  enabledSnippets: {},
+  enabledOverrides: {},
   editorFontSize: 16,
   editorLineHeight: 1.7,
   previewMaxWidth: 920,
@@ -590,7 +590,7 @@ function normalizePrefs(p: Partial<Prefs>): Prefs {
         ? p.vimYankToClipboard
         : DEFAULT_PREFS.vimYankToClipboard,
     keymapOverrides: normalizeKeymapOverrides(p.keymapOverrides),
-    enabledSnippets: normalizeEnabledSnippets(p.enabledSnippets),
+    enabledOverrides: normalizeEnabledOverrides(p.enabledOverrides),
     whichKeyHints:
       typeof p.whichKeyHints === 'boolean'
         ? p.whichKeyHints
@@ -1349,7 +1349,7 @@ function collectPrefs(s: {
   vimInsertEscape: string
   vimYankToClipboard: boolean
   keymapOverrides: KeymapOverrides
-  enabledSnippets: Record<string, string>
+  enabledOverrides: Record<string, string>
   whichKeyHints: boolean
   whichKeyHintMode: WhichKeyHintMode
   whichKeyHintTimeoutMs: number
@@ -1411,7 +1411,7 @@ function collectPrefs(s: {
     vimInsertEscape: s.vimInsertEscape,
     vimYankToClipboard: s.vimYankToClipboard,
     keymapOverrides: s.keymapOverrides,
-    enabledSnippets: s.enabledSnippets,
+    enabledOverrides: s.enabledOverrides,
     whichKeyHints: s.whichKeyHints,
     whichKeyHintMode: s.whichKeyHintMode,
     whichKeyHintTimeoutMs: s.whichKeyHintTimeoutMs,
@@ -1780,8 +1780,8 @@ interface Store {
   /** When true, Vim yank/delete/change also copy to the system clipboard. Persisted. */
   vimYankToClipboard: boolean
   keymapOverrides: KeymapOverrides
-  /** Enabled CSS snippets, keyed by filename. Persisted to config [snippets]. */
-  enabledSnippets: Record<string, string>
+  /** Enabled CSS overrides, keyed by filename. Persisted to config [overrides]. */
+  enabledOverrides: Record<string, string>
   whichKeyHints: boolean
   whichKeyHintMode: WhichKeyHintMode
   whichKeyHintTimeoutMs: number
@@ -1885,11 +1885,11 @@ interface Store {
   /** User themes parsed from ~/.config/zennotes/themes. Loaded + watched by
    *  `initCustomThemes`; the CSS is injected as it changes. */
   customThemes: CustomTheme[]
-  /** User CSS snippets parsed from ~/.config/zennotes/snippets. Loaded + watched
-   *  by `initSnippets`; enabled ones are injected on top of the active theme. */
-  snippets: Snippet[]
-  /** Toggle a snippet on/off (persists to the config [snippets] table). */
-  setSnippetEnabled(name: string, on: boolean): void
+  /** User CSS overrides parsed from ~/.config/zennotes/overrides. Loaded + watched
+   *  by `initOverrides`; enabled ones are injected on top of the active theme. */
+  overrides: Override[]
+  /** Toggle a override on/off (persists to the config [overrides] table). */
+  setOverrideEnabled(name: string, on: boolean): void
   tasksLoading: boolean
   tasksFilter: string
   taskCursorIndex: number
@@ -3197,7 +3197,7 @@ export const useStore = create<Store>((set, get) => {
   vimInsertEscape: loadPrefs().vimInsertEscape,
   vimYankToClipboard: loadPrefs().vimYankToClipboard,
   keymapOverrides: loadPrefs().keymapOverrides,
-  enabledSnippets: loadPrefs().enabledSnippets,
+  enabledOverrides: loadPrefs().enabledOverrides,
   whichKeyHints: loadPrefs().whichKeyHints,
   whichKeyHintMode: loadPrefs().whichKeyHintMode,
   whichKeyHintTimeoutMs: loadPrefs().whichKeyHintTimeoutMs,
@@ -3256,7 +3256,7 @@ export const useStore = create<Store>((set, get) => {
   hasCompletedOnboarding: loadPrefs().hasCompletedOnboarding,
   vaultTasks: [],
   customThemes: [],
-  snippets: [],
+  overrides: [],
   tasksLoading: false,
   tasksFilter: '',
   taskCursorIndex: 0,
@@ -4860,12 +4860,12 @@ export const useStore = create<Store>((set, get) => {
     set({ keymapOverrides: {} })
     savePrefs(collectPrefs(get()))
   },
-  setSnippetEnabled: (name, on) => {
+  setOverrideEnabled: (name, on) => {
     set((s) => {
-      const next = { ...s.enabledSnippets }
+      const next = { ...s.enabledOverrides }
       if (on) next[name] = 'on'
       else delete next[name]
-      return { enabledSnippets: next }
+      return { enabledOverrides: next }
     })
     savePrefs(collectPrefs(get()))
   },
@@ -7208,7 +7208,7 @@ export function initCustomThemes(): void {
 }
 
 /** Keep only string→string entries with a `.css` key (tolerant of hand edits). */
-function normalizeEnabledSnippets(raw: unknown): Record<string, string> {
+function normalizeEnabledOverrides(raw: unknown): Record<string, string> {
   const out: Record<string, string> = {}
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -7220,32 +7220,32 @@ function normalizeEnabledSnippets(raw: unknown): Record<string, string> {
   return out
 }
 
-function applySnippets(snippets: Snippet[]): void {
-  useStore.setState({ snippets })
-  // App.tsx injects the enabled snippets in response to the state change.
+function applyOverrides(overrides: Override[]): void {
+  useStore.setState({ overrides })
+  // App.tsx injects the enabled overrides in response to the state change.
 }
 
-/** Re-scan the snippets dir and apply the result. */
-export function refreshSnippets(): void {
+/** Re-scan the overrides dir and apply the result. */
+export function refreshOverrides(): void {
   const bridge = typeof window !== 'undefined' ? window.zen : undefined
-  if (!bridge || typeof bridge.listSnippets !== 'function') return
+  if (!bridge || typeof bridge.listOverrides !== 'function') return
   void bridge
-    .listSnippets()
-    .then(applySnippets)
+    .listOverrides()
+    .then(applyOverrides)
     .catch(() => {})
 }
 
 /**
- * Load user snippets from the config dir and keep them in sync as files change.
+ * Load user overrides from the config dir and keep them in sync as files change.
  * Safe to call on web (no bridge → no-op).
  */
-export function initSnippets(): void {
+export function initOverrides(): void {
   const bridge = typeof window !== 'undefined' ? window.zen : undefined
-  if (!bridge || typeof bridge.listSnippets !== 'function') return
-  refreshSnippets()
-  if (typeof bridge.onSnippetsChange === 'function') {
+  if (!bridge || typeof bridge.listOverrides !== 'function') return
+  refreshOverrides()
+  if (typeof bridge.onOverridesChange === 'function') {
     try {
-      bridge.onSnippetsChange(applySnippets)
+      bridge.onOverridesChange(applyOverrides)
     } catch {
       /* ignore */
     }

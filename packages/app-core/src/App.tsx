@@ -1,9 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
-import { useStore, initConfigSync, initCustomThemes, initSnippets } from './store'
+import { useStore, initConfigSync, initCustomThemes, initOverrides } from './store'
 import { resolveAuto, findTheme } from './lib/themes'
 import {
   injectActiveTheme,
-  injectSnippets,
+  injectOverrides,
   isCustomThemeId,
   customThemeSlugFromId,
   resolveCustomThemeMode
@@ -272,8 +272,8 @@ function App(): JSX.Element {
   const themeFamily = useStore((s) => s.themeFamily)
   const themeMode = useStore((s) => s.themeMode)
   const customThemes = useStore((s) => s.customThemes)
-  const snippets = useStore((s) => s.snippets)
-  const enabledSnippets = useStore((s) => s.enabledSnippets)
+  const overrides = useStore((s) => s.overrides)
+  const enabledOverrides = useStore((s) => s.enabledOverrides)
   const editorFontSize = useStore((s) => s.editorFontSize)
   const editorLineHeight = useStore((s) => s.editorLineHeight)
   const previewMaxWidth = useStore((s) => s.previewMaxWidth)
@@ -335,7 +335,7 @@ function App(): JSX.Element {
   useEffect(() => {
     initConfigSync()
     initCustomThemes()
-    initSnippets()
+    initOverrides()
   }, [])
 
   // Drag a markdown file from the OS onto the window to open it. Desktop
@@ -413,7 +413,7 @@ function App(): JSX.Element {
   // Apply theme: set html[data-theme=...] + html[data-theme-mode=...] based on
   // mode/family/id. Custom themes keep one id (`custom-<slug>`) and express
   // light/dark via `data-theme-mode`; built-ins encode mode in their id but we
-  // mirror it onto `data-theme-mode` too so snippets/custom CSS can rely on it
+  // mirror it onto `data-theme-mode` too so overrides/custom CSS can rely on it
   // universally. When mode === 'auto' we mirror `prefers-color-scheme` live.
   useEffect(() => {
     const html = document.documentElement
@@ -446,10 +446,10 @@ function App(): JSX.Element {
     injectActiveTheme(themeId, customThemes)
   }, [themeId, customThemes])
 
-  // Inject enabled CSS snippets on top of the active theme.
+  // Inject enabled CSS overrides on top of the active theme.
   useEffect(() => {
-    injectSnippets(snippets, enabledSnippets)
-  }, [snippets, enabledSnippets])
+    injectOverrides(overrides, enabledOverrides)
+  }, [overrides, enabledOverrides])
 
   // Apply editor font size + line height + all three font families as
   // CSS variables. Each family has its own fallback stack so leaving it

@@ -1,11 +1,11 @@
 /**
- * Renderer side of custom themes + snippets.
+ * Renderer side of custom themes + overrides.
  *
  * A custom theme is a folder of raw CSS (see `@shared/custom-themes`). We inject
  * only the *active* theme's `theme.css` — so an inactive theme's arbitrary or
  * global CSS is never present in the document — into a managed
  * `<style id="zen-active-theme">`, swapping its contents on theme switch.
- * Enabled snippets are concatenated into `<style id="zen-snippets">`, kept last
+ * Enabled overrides are concatenated into `<style id="zen-overrides">`, kept last
  * in <head> so they win the cascade over both built-in and custom themes.
  *
  * Light/dark is driven by `data-theme-mode` on <html> (set in App.tsx), so the
@@ -17,12 +17,12 @@ import {
   type CustomTheme,
   type CustomThemeMode
 } from '@shared/custom-themes'
-import { isSnippetEnabled, type Snippet } from '@shared/snippets'
+import { isOverrideEnabled, type Override } from '@shared/overrides'
 
 export { isCustomThemeId, customThemeSlugFromId }
 
 const ACTIVE_THEME_STYLE_ID = 'zen-active-theme'
-const SNIPPETS_STYLE_ID = 'zen-snippets'
+const OVERRIDES_STYLE_ID = 'zen-overrides'
 
 /**
  * Create/update/remove a managed `<style>` by id. Empty `css` removes it.
@@ -44,12 +44,12 @@ function applyManagedStyle(id: string, css: string): HTMLStyleElement | null {
   return style
 }
 
-/** Move the snippets <style> to the end of <head> so it stays after the active
- *  theme and the bundled stylesheet (later source order → snippets win ties). */
-function ensureSnippetsLast(): void {
+/** Move the overrides <style> to the end of <head> so it stays after the active
+ *  theme and the bundled stylesheet (later source order → overrides win ties). */
+function ensureOverridesLast(): void {
   if (typeof document === 'undefined') return
-  const snippets = document.getElementById(SNIPPETS_STYLE_ID)
-  if (snippets) document.head.appendChild(snippets)
+  const overrides = document.getElementById(OVERRIDES_STYLE_ID)
+  if (overrides) document.head.appendChild(overrides)
 }
 
 /** Inject (or clear) the active custom theme's raw CSS. Built-in themes — or a
@@ -58,22 +58,22 @@ export function injectActiveTheme(themeId: string, themes: CustomTheme[]): void 
   const slug = customThemeSlugFromId(themeId)
   const theme = slug ? themes.find((t) => t.slug === slug && !t.error) : undefined
   applyManagedStyle(ACTIVE_THEME_STYLE_ID, theme?.css ?? '')
-  ensureSnippetsLast()
+  ensureOverridesLast()
 }
 
-/** Inject the enabled snippets (filename order) after the active theme. */
-export function injectSnippets(
-  snippets: Snippet[],
+/** Inject the enabled overrides (filename order) after the active theme. */
+export function injectOverrides(
+  overrides: Override[],
   enabled: Record<string, string> | undefined
 ): void {
-  const css = snippets
-    .filter((s) => !s.error && isSnippetEnabled(enabled, s.name))
+  const css = overrides
+    .filter((s) => !s.error && isOverrideEnabled(enabled, s.name))
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((s) => `/* @snippet ${s.name} */\n${s.css.trim()}`)
+    .map((s) => `/* @override ${s.name} */\n${s.css.trim()}`)
     .join('\n\n')
-  applyManagedStyle(SNIPPETS_STYLE_ID, css)
-  ensureSnippetsLast()
+  applyManagedStyle(OVERRIDES_STYLE_ID, css)
+  ensureOverridesLast()
 }
 
 /**

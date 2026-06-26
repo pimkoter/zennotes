@@ -113,15 +113,15 @@ import {
   resolveThemeAssetPath
 } from './custom-themes'
 import {
-  ensureSnippetsDir,
-  listSnippets,
-  startWatchingSnippets,
-  snippetRevealTarget,
-  deleteSnippet
-} from './snippets'
+  ensureOverridesDir,
+  listOverrides,
+  startWatchingOverrides,
+  overrideRevealTarget,
+  deleteOverride
+} from './overrides'
 import type { AppConfigPortable } from '@shared/app-config'
 import type { CustomTheme } from '@shared/custom-themes'
-import type { Snippet } from '@shared/snippets'
+import type { Override } from '@shared/overrides'
 import {
   listCustomTemplates,
   readCustomTemplate,
@@ -2790,12 +2790,12 @@ function registerIpc(): void {
     await deleteCustomTheme(slug)
   })
   handle(IPC.CUSTOM_THEMES_CREATE, (_event, input: { name?: string }) => createCustomTheme(input))
-  handle(IPC.SNIPPETS_LIST, () => listSnippets())
-  handle(IPC.SNIPPETS_REVEAL, async (_event, name?: string) => {
-    shell.showItemInFolder(await snippetRevealTarget(name))
+  handle(IPC.OVERRIDES_LIST, () => listOverrides())
+  handle(IPC.OVERRIDES_REVEAL, async (_event, name?: string) => {
+    shell.showItemInFolder(await overrideRevealTarget(name))
   })
-  handle(IPC.SNIPPETS_DELETE, async (_event, name: string) => {
-    await deleteSnippet(name)
+  handle(IPC.OVERRIDES_DELETE, async (_event, name: string) => {
+    await deleteOverride(name)
   })
 }
 
@@ -2814,10 +2814,10 @@ function broadcastCustomThemesChange(next: CustomTheme[]): void {
   }
 }
 
-/** Push the freshly-scanned snippets to every renderer on a file change. */
-function broadcastSnippetsChange(next: Snippet[]): void {
+/** Push the freshly-scanned overrides to every renderer on a file change. */
+function broadcastOverridesChange(next: Override[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.SNIPPETS_ON_CHANGE, next)
+    if (!win.isDestroyed()) win.webContents.send(IPC.OVERRIDES_ON_CHANGE, next)
   }
 }
 
@@ -3423,9 +3423,9 @@ app.whenReady().then(async () => {
   await ensureCustomThemesDir().catch(() => {})
   startWatchingCustomThemes(broadcastCustomThemesChange)
 
-  // CSS snippets live in a sibling dir; same seed-then-watch dance.
-  await ensureSnippetsDir().catch(() => {})
-  startWatchingSnippets(broadcastSnippetsChange)
+  // CSS overrides live in a sibling dir; same seed-then-watch dance.
+  await ensureOverridesDir().catch(() => {})
+  startWatchingOverrides(broadcastOverridesChange)
 
   installAppMenu()
   registerIpc()

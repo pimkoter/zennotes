@@ -1224,10 +1224,10 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
     }
   })
   cmds.push({
-    id: 'ui.snippets',
-    title: 'Snippets…',
+    id: 'ui.overrides',
+    title: 'Overrides…',
     category: 'UI',
-    keywords: 'css snippet tweak override theme appearance customize color',
+    keywords: 'css override tweak override theme appearance customize color',
     when: () => window.zen.getAppInfo().runtime === 'desktop',
     run: () => getState().setSettingsOpen(true)
   })
@@ -1478,7 +1478,7 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
         }
         if (status.pathHint) {
           lines.push(
-            `Heads up: ${status.defaultTarget.replace(/\/[^/]+$/, '')} is not on your PATH yet. Settings → CLI shows the one-line shell snippet you'll need to add after install.`
+            `Heads up: ${status.defaultTarget.replace(/\/[^/]+$/, '')} is not on your PATH yet. Settings → CLI shows the one-line shell override you'll need to add after install.`
           )
         }
         const ok = await confirmApp({

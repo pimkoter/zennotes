@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { injectActiveTheme, injectSnippets, resolveCustomThemeMode } from './custom-themes'
+import { injectActiveTheme, injectOverrides, resolveCustomThemeMode } from './custom-themes'
 import type { CustomTheme } from '@shared/custom-themes'
-import type { Snippet } from '@shared/snippets'
+import type { Override } from '@shared/overrides'
 
 const theme = (slug: string, css: string, extra: Partial<CustomTheme> = {}): CustomTheme => ({
   slug,
@@ -31,25 +31,25 @@ describe('injectActiveTheme', () => {
   })
 })
 
-describe('injectSnippets', () => {
-  it('injects only enabled snippets, in filename order, after the theme', () => {
+describe('injectOverrides', () => {
+  it('injects only enabled overrides, in filename order, after the theme', () => {
     injectActiveTheme('custom-x', [theme('x', ':root{}')])
-    const snippets: Snippet[] = [
+    const overrides: Override[] = [
       { name: 'b.css', css: '.b{}' },
       { name: 'a.css', css: '.a{}' },
       { name: 'off.css', css: '.off{}' }
     ]
-    injectSnippets(snippets, { 'a.css': 'on', 'b.css': 'on' })
-    const text = document.getElementById('zen-snippets')!.textContent!
+    injectOverrides(overrides, { 'a.css': 'on', 'b.css': 'on' })
+    const text = document.getElementById('zen-overrides')!.textContent!
     expect(text.indexOf('.a{}')).toBeLessThan(text.indexOf('.b{}')) // sorted
     expect(text).not.toContain('.off{}') // disabled excluded
     const ids = Array.from(document.head.children).map((c) => c.id)
-    expect(ids.indexOf('zen-snippets')).toBeGreaterThan(ids.indexOf('zen-active-theme'))
+    expect(ids.indexOf('zen-overrides')).toBeGreaterThan(ids.indexOf('zen-active-theme'))
   })
 
-  it('removes the snippets style when nothing is enabled', () => {
-    injectSnippets([{ name: 'a.css', css: '.a{}' }], {})
-    expect(document.getElementById('zen-snippets')).toBeNull()
+  it('removes the overrides style when nothing is enabled', () => {
+    injectOverrides([{ name: 'a.css', css: '.a{}' }], {})
+    expect(document.getElementById('zen-overrides')).toBeNull()
   })
 })
 
