@@ -54,6 +54,16 @@ export function wikilinkHeadingAnchor(target: string): string | null {
   return target.slice(hash + 1).trim() || null
 }
 
+/**
+ * True for `[[#heading]]` (optionally `[[#heading|label]]`) — a wikilink whose
+ * note part is empty, so it targets a heading *in the current note*. Callers
+ * resolve it against the note being viewed/edited instead of searching for a
+ * note by name (which would fail for an empty name). (#291)
+ */
+export function isSameFileHeadingLink(target: string): boolean {
+  return stripWikilinkAnchor(target).trim() === '' && wikilinkHeadingAnchor(target) != null
+}
+
 function resolveExplicitPath(notes: NoteRef[], target: string): NoteRef | null {
   const normalized = normalizeSlashes(target.trim())
   if (!normalized) return null

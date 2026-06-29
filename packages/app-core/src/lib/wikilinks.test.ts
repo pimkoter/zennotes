@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isSameFileHeadingLink,
   parseCreateNotePath,
   resolveWikilinkTarget,
   stripWikilinkAnchor,
@@ -38,6 +39,24 @@ describe('wikilinkHeadingAnchor (#196)', () => {
   it('is null without a heading anchor', () => {
     expect(wikilinkHeadingAnchor('My Document')).toBeNull()
     expect(wikilinkHeadingAnchor('My Document^block')).toBeNull()
+  })
+})
+
+describe('isSameFileHeadingLink (#291)', () => {
+  it('is true for a heading link with no note part', () => {
+    expect(isSameFileHeadingLink('#My Heading')).toBe(true)
+    expect(isSameFileHeadingLink('#heading')).toBe(true)
+  })
+
+  it('is false when a note part is present', () => {
+    expect(isSameFileHeadingLink('Doc#My Heading')).toBe(false)
+    expect(isSameFileHeadingLink('projects/Spec#design')).toBe(false)
+  })
+
+  it('is false without a heading anchor (plain note, empty, or block ref)', () => {
+    expect(isSameFileHeadingLink('Doc')).toBe(false)
+    expect(isSameFileHeadingLink('#')).toBe(false)
+    expect(isSameFileHeadingLink('^block')).toBe(false)
   })
 })
 
