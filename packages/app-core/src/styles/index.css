@@ -2545,11 +2545,35 @@ textarea,
   margin: var(--z-prose-block-gap) 0;
   font-size: 0.94em;
 }
+/* A table with persisted column widths (#294): honor the <colgroup> exactly via
+   fixed layout (sizes to the columns' sum) instead of stretching to 100%. */
+.prose-zen table.zen-has-col-widths {
+  table-layout: fixed;
+  width: auto;
+  max-width: 100%;
+}
+.prose-zen table.zen-has-col-widths th,
+.prose-zen table.zen-has-col-widths td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .prose-zen th,
 .prose-zen td {
   border: 1px solid theme("colors.paper.300");
   padding: 0.5em 0.75em;
   text-align: left;
+}
+/* PDF/print: let long cell content wrap so wide tables fit the page instead of
+   overflowing (or rendering scrambled). (#294) */
+@media print {
+  .prose-zen table {
+    max-width: 100%;
+  }
+  .prose-zen th,
+  .prose-zen td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
 }
 /* GFM column alignment (`:--`, `:-:`, `--:`) is emitted as the `align`
    attribute, a low-specificity presentational hint that the rule above
@@ -3744,9 +3768,11 @@ textarea,
      The negative LEFT margin cancels the left padding so the table content
      still lines up with the body text (and matches Preview) instead of sitting
      ~2 chars indented. Horizontal margin is safe — only vertical margin breaks
-     the height measurement. */
+     the height measurement.
+     Right/bottom are kept tight (#294): they only host the thin hover add-rails,
+     so a big reserve there just read as dead padding around idle tables. */
   margin: 0 0 0 -16px;
-  padding: 16px;
+  padding: 14px 9px 9px 16px;
   overflow-x: auto;
   white-space: normal;
   font-family: var(
@@ -3770,6 +3796,48 @@ textarea,
 .cm-table-widget table {
   border-collapse: collapse;
   border-spacing: 0;
+}
+/* Once any column has an explicit width (#294), fixed layout makes the <col>
+   widths authoritative; the table sizes to their sum and scrolls if wide. */
+.cm-table-widget table.cm-table-fixed {
+  table-layout: fixed;
+}
+.cm-table-widget table.cm-table-fixed .cm-table-cell {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+/* Drag-to-resize grip straddling a header cell's right border. (#294) */
+.cm-table-widget .cm-table-col-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  user-select: none;
+  touch-action: none;
+}
+.cm-table-widget .cm-table-col-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 3px;
+  width: 2px;
+  height: 100%;
+  background: rgb(var(--z-accent) / 0);
+  transition: background 0.12s ease;
+}
+.cm-table-widget th:hover .cm-table-col-resize::after,
+.cm-table-widget .cm-table-col-resize:hover::after,
+.cm-table-widget.is-col-resizing .cm-table-col-resize::after {
+  background: rgb(var(--z-accent) / 0.55);
+}
+.cm-table-widget.is-col-resizing {
+  cursor: col-resize;
+}
+.cm-table-widget.is-col-resizing .cm-table-cell {
+  user-select: none;
 }
 .cm-table-widget th,
 .cm-table-widget td {
@@ -3899,15 +3967,15 @@ textarea,
 .cm-table-widget .cm-table-add-col {
   top: 0;
   right: 0;
-  width: 13px;
+  width: 9px;
   height: 100%;
 }
 .cm-table-widget .cm-table-add-row {
   left: 0;
   bottom: 0;
-  height: 13px;
+  height: 9px;
   /* Span the grid, not the button rail on the right. */
-  width: calc(100% - 14px);
+  width: calc(100% - 10px);
 }
 
 /* Drag-to-reorder grips: row grip left of each body row, column grip above
