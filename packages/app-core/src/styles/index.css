@@ -2658,6 +2658,18 @@ textarea,
     overflow-wrap: anywhere;
     word-break: break-word;
   }
+  /* Fenced code: the editor/preview scrolls a long line horizontally
+     (`overflow-x: auto` + `white-space: pre`), but the PDF can't scroll, so the
+     line gets clipped off the right edge. In print, wrap it instead. (#297) */
+  .prose-zen pre {
+    overflow-x: visible;
+  }
+  .prose-zen pre,
+  .prose-zen pre code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
 }
 /* GFM column alignment (`:--`, `:-:`, `--:`) is emitted as the `align`
    attribute, a low-specificity presentational hint that the rule above
