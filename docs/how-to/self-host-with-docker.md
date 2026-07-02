@@ -204,8 +204,32 @@ The container reads these on startup. Set them in `docker-compose.yml`
 or via the orchestrator of your choice.
 
 - `ZENNOTES_AUTH_TOKEN` — bootstrap token. Required for non-loopback binds.
-- `ZENNOTES_AUTH_TOKEN_FILE` — read the token from a file path. Use this
-  with Docker/Kubernetes secrets so the value never lives in `.env`.
+- `ZENNOTES_AUTH_TOKEN_FILE` — read the token from a file instead of an env
+  var (the Docker/Kubernetes `*_FILE` secrets convention), so the value never
+  lives in `.env` or `docker-compose.yml`. Details:
+  - It is used **only when `ZENNOTES_AUTH_TOKEN` is unset** — a set
+    `ZENNOTES_AUTH_TOKEN` always wins.
+  - The path must **exist and be readable by the container's user**, and the
+    file's contents are **trimmed** of surrounding whitespace/newlines.
+  - If the file is missing, unreadable, or empty, the server logs a clear
+    `ZENNOTES_AUTH_TOKEN_FILE … could not be read` (or `… is empty`) line and
+    then refuses to start on a non-loopback bind — check `docker logs`.
+  - A bare `ZENNOTES_AUTH_TOKEN_FILE=${ZENNOTES_AUTH_TOKEN_FILE}` in Compose
+    resolves to an **empty** value (and is ignored) unless that variable is set
+    on the host — point it at the mounted secret path directly instead:
+
+    ```yaml
+    services:
+      zennotes:
+        image: adibhanna/zennotes
+        environment:
+          ZENNOTES_AUTH_TOKEN_FILE: /run/secrets/zennotes_auth_token
+        secrets:
+          - zennotes_auth_token
+    secrets:
+      zennotes_auth_token:
+        file: ./secrets/zennotes_auth_token.txt
+    ```
 - `ZENNOTES_BEHIND_TLS=1` — declare that a TLS-terminating proxy is in
   front. Enables `Secure` cookies and `Strict-Transport-Security`.
 - `ZENNOTES_TRUSTED_PROXIES` — comma-separated CIDR list. Required if

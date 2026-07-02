@@ -323,7 +323,9 @@ Important current variables:
 - `ZENNOTES_AUTH_TOKEN_FILE` — path to a file containing the token;
   used when `ZENNOTES_AUTH_TOKEN` is unset, matching the
   Docker/Kubernetes secrets convention so the token never has to live
-  in `.env`.
+  in `.env`. The file must be readable by the server's user and its
+  contents are trimmed; a missing, unreadable, or empty file is logged
+  explicitly rather than silently ignored.
 - `ZENNOTES_CONFIG_PATH`
 - `ZENNOTES_BIND`
 - `ZENNOTES_ALLOWED_ORIGINS`
