@@ -2366,6 +2366,7 @@ interface Store {
     opts?: { folder?: NoteFolder; subpath?: string; title?: string; date?: Date }
   ) => Promise<void>
   saveActiveNoteAsTemplate: () => Promise<void>
+  saveActiveNoteAs: (newName: string) => Promise<void>
   setWordWrap: (on: boolean) => void
   setPreviewSmoothScroll: (on: boolean) => void
   setEditorMaxWidth: (px: number) => void
@@ -5821,6 +5822,19 @@ export const useStore = create<Store>((set, get) => {
     if (!trimmed) return
     const raw = composeTemplateFile({ name: trimmed, category: 'Custom', body: active.body })
     await get().saveCustomTemplate({ slug: slugifyTemplateName(trimmed), raw })
+  },
+
+  saveActiveNoteAs: async (newName: string) => {
+    const active = get().activeNote
+    const notePath = active?.path
+    if (!active || !notePath) return
+    // Strip a user-supplied extension so note renames stay title-based;
+    // the backend appends the note's real file extension.
+    const trimmedName = newName.trim().replace(/\.md$/i, '')
+    if (!trimmedName) return
+    if (trimmedName === active.title) return
+    await get().persistNote(notePath)
+    await get().renameNote(notePath, trimmedName)
   },
 
   setWordWrap: (on) => {
