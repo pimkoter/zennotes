@@ -22,7 +22,6 @@ import type { PaneLayout, PaneSplit } from '../lib/pane-layout'
 import {
   parseCreateNotePath,
   resolveWikilinkTarget,
-  suggestCreateNotePath,
   wikilinkHeadingAnchor
 } from '../lib/wikilinks'
 import { openDatabaseFromWikilink, openWikilinkHeading } from '../lib/wikilink-navigation'
@@ -34,6 +33,7 @@ import {
   validateMoveNoteTarget
 } from '../lib/move-note'
 import { promptApp } from '../lib/prompt-requests'
+import { offerCreateNoteFromLink } from '../lib/create-note-from-link'
 import { StatusBar } from './StatusBar'
 import { EditorPane } from './EditorPane'
 import { focusPaneInDirection, focusPaneOrEdgePanel } from '../lib/pane-nav'
@@ -566,41 +566,8 @@ function registerVimCommands(): void {
       return
     }
 
-    void promptApp({
-      title: `Create note for "${target}"?`,
-      description:
-        'No matching note exists. Use /my/path/note.md for Inbox-relative paths, or inbox/my/path/note.md for an explicit top folder.',
-      initialValue: suggestCreateNotePath(target),
-      placeholder: '/my/path/note.md',
-      okLabel: 'Create',
-      validate: (value) => {
-        try {
-          parseCreateNotePath(value)
-          return null
-        } catch (err) {
-          return (err as Error).message
-        }
-      }
-    }).then(async (value) => {
-      if (!value) return
-      try {
-        const parsed = parseCreateNotePath(value)
-        const existing = state.notes.find(
-          (note) => note.folder !== 'trash' && note.path.toLowerCase() === parsed.relPath.toLowerCase()
-        )
-        if (existing) {
-          await state.selectNote(existing.path)
-          state.setFocusedPanel('editor')
-          requestAnimationFrame(() => useStore.getState().editorViewRef?.focus())
-          return
-        }
-        await state.createAndOpen(parsed.folder, parsed.subpath, { title: parsed.title })
-        state.setFocusedPanel('editor')
-        requestAnimationFrame(() => useStore.getState().editorViewRef?.focus())
-      } catch (err) {
-        alertEditorError((err as Error).message)
-      }
-    })
+    // Dead link — confirm, then create the note (shared with the cmd-click path).
+    void offerCreateNoteFromLink(target)
   })
 
   // Vim-style pane navigation actions are registered here, but their

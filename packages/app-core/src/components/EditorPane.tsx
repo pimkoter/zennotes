@@ -55,6 +55,7 @@ import { markdownListIndentPlugin } from '../lib/cm-markdown-list-indent'
 import { completionNavKeymap } from '../lib/cm-completion-nav'
 import { vimAwareDefaultKeymap } from '../lib/cm-vim-default-keymap'
 import { scrollOff } from '../lib/cm-scrolloff'
+import { offerCreateNoteFromLink } from '../lib/create-note-from-link'
 import { setYankToClipboardEnabled } from '../lib/cm-vim-clipboard'
 import { wireYankHighlight, yankHighlightExtension } from '../lib/cm-yank-highlight'
 import { frontmatterStyle } from '../lib/cm-frontmatter'
@@ -666,7 +667,10 @@ function followEditorLink(target: string): boolean {
     focusSoon()
     return true
   }
-  return false
+  // Dead link — don't leave it a silent dead end. Offer to create the note (with
+  // a confirmation), matching the `gd` follow-link path. (Discord: dead links)
+  void offerCreateNoteFromLink(target)
+  return true
 }
 
 const EMPTY_PANE_MODES: PaneModesByPath = {}
