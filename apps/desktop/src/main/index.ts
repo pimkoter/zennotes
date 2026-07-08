@@ -568,7 +568,10 @@ function openExternalFileWindow(absPath: string): void {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Same reason as the main window: keep this editor renderer live when the
+      // OS backgrounds/occludes it, so Vim keys and shortcuts don't freeze. (#350)
+      backgroundThrottling: false
     }
   })
 
@@ -953,7 +956,15 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
       // fully sandboxed preload context.
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Don't let Chromium throttle/freeze this renderer when it decides the
+      // window is "background" — that can happen while the window is still
+      // visually open (occlusion misdetection, display idle, some Wayland
+      // compositors). When throttled, the renderer's JS input pipeline stalls,
+      // so window-level shortcuts and CodeMirror's Vim keymap stop receiving
+      // keys and keystrokes fall through as literal text, until a focus event
+      // wakes it. The editor is the primary surface here, so keep it live. (#350)
+      backgroundThrottling: false
     }
   })
 
@@ -2921,7 +2932,10 @@ function openFloatingNoteWindow(relPath: string): void {
       // fully sandboxed preload context.
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Same reason as the main window: keep this editor renderer live when the
+      // OS backgrounds/occludes it, so Vim keys and shortcuts don't freeze. (#350)
+      backgroundThrottling: false
     }
   })
 
@@ -3009,7 +3023,10 @@ async function ensureQuickCaptureWindow(): Promise<BrowserWindow> {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Same reason as the main window: keep this editor renderer live when the
+      // OS backgrounds/occludes it, so Vim keys and shortcuts don't freeze. (#350)
+      backgroundThrottling: false
     }
   })
 

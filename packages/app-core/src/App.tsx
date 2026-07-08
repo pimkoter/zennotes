@@ -21,6 +21,7 @@ import { focusPaneOrEdgePanel } from './lib/pane-nav'
 import { requestPaneMode } from './lib/pane-mode'
 import { recordRendererPerf } from './lib/perf'
 import { focusEditorNormalMode } from './lib/editor-focus'
+import { isAppOverlayOpen } from './lib/overlay-open'
 import { installMarkdownFileDropHandler } from './lib/markdown-file-drop'
 import {
   appUpdateNoticeLabel,
@@ -782,6 +783,49 @@ function App(): JSX.Element {
     setSearchOpen,
     setVaultTextSearchOpen
   ])
+
+  // Self-heal keyboard focus when the window wakes from an idle/background
+  // state. If Chromium/the OS lets the editor silently lose DOM focus while
+  // idle, window shortcuts and the Vim keymap stop receiving keys until focus
+  // is re-established. When the window regains focus (or becomes visible again)
+  // and the editor was the active surface with no overlay open, re-grab it so
+  // the user doesn't have to open Settings + Escape to recover. Pairs with the
+  // main-process `backgroundThrottling: false`. (#350)
+  useEffect(() => {
+    const heal = (): void => {
+      const state = useStore.getState()
+      if (state.focusedPanel !== 'editor') return
+      if (
+        state.settingsOpen ||
+        state.searchOpen ||
+        state.vaultTextSearchOpen ||
+        state.commandPaletteOpen ||
+        state.bufferPaletteOpen ||
+        state.templatePaletteOpen ||
+        state.outlinePaletteOpen ||
+        isAppOverlayOpen()
+      ) {
+        return
+      }
+      const view = state.editorViewRef
+      if (!view) return
+      const active = document.activeElement
+      const editorHasFocus = !!active && (active === view.dom || view.dom.contains(active))
+      if (editorHasFocus) return
+      // Leave a deliberately-focused note-title input alone.
+      if (active instanceof HTMLElement && active.dataset.noteTitleInput != null) return
+      focusEditorNormalMode()
+    }
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') heal()
+    }
+    window.addEventListener('focus', heal)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('focus', heal)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
 
   if (!hasCompletedOnboarding) {
     return (
