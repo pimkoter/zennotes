@@ -108,6 +108,7 @@ type SettingsCategoryId =
   | "appearance"
   | "editor"
   | "keymaps"
+  | "tasks"
   | "typography"
   | "vault"
   | "templates"
@@ -183,6 +184,13 @@ const SETTINGS_CATEGORY_ICONS: Record<SettingsCategoryId, JSX.Element> = {
       <path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" />
     </NavIcon>
   ),
+  tasks: (
+    <NavIcon>
+      <rect x="3" y="4" width="5" height="16" rx="1" />
+      <rect x="10" y="4" width="5" height="10" rx="1" />
+      <rect x="17" y="4" width="4" height="13" rx="1" />
+    </NavIcon>
+  ),
   vault: (
     <NavIcon>
       <path d="M12 3 3 7v10l9 4 9-4V7Z" />
@@ -225,7 +233,11 @@ const SETTINGS_SECTIONS: {
     title: "Look & feel",
     categoryIds: ["appearance", "typography"],
   },
-  { id: "editing", title: "Editing", categoryIds: ["editor", "keymaps"] },
+  {
+    id: "editing",
+    title: "Editing",
+    categoryIds: ["editor", "tasks", "keymaps"],
+  },
   { id: "vault", title: "Vault", categoryIds: ["vault", "templates"] },
   { id: "system", title: "System", categoryIds: ["mcp", "cli", "about"] },
 ];
@@ -384,6 +396,7 @@ export function SettingsModal(): JSX.Element {
     appInfo.runtime === "desktop" &&
     zenBridge.getCapabilities().supportsRemoteWorkspace;
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const openHelpView = useStore((s) => s.openHelpView);
   const vimMode = useStore((s) => s.vimMode);
   const setVimMode = useStore((s) => s.setVimMode);
   const vimInsertEscape = useStore((s) => s.vimInsertEscape);
@@ -1825,8 +1838,8 @@ export function SettingsModal(): JSX.Element {
                       onChange={(next) => setVimInsertEscape(next ?? "")}
                     />
                     <ToggleRow
-                      label="Yank to system clipboard"
-                      description="Copy yanked, deleted, and changed text to the system clipboard (like Vim's clipboard=unnamed), so y/d/c/x are available to paste in other apps."
+                      label="Sync clipboard with Vim registers"
+                      description="Copy yanked, deleted, and changed text to the system clipboard, and paste from it with p / P (like Vim's clipboard=unnamed), so y/d/c/x/p work across apps."
                       value={vimYankToClipboard}
                       settingId="vim-yank-to-clipboard"
                       onChange={setVimYankToClipboard}
@@ -2097,6 +2110,60 @@ export function SettingsModal(): JSX.Element {
             onSetBinding={(id, binding) => setKeymapBinding(id, binding)}
             onResetAll={resetAllKeymaps}
           />
+        </div>
+      ),
+    },
+    {
+      id: "tasks",
+      title: "Tasks",
+      description: "Kanban columns and workflow for the vault-wide Tasks view.",
+      keywords: [
+        "kanban",
+        "status",
+        "board",
+        "columns",
+        "tasks",
+        "workflow",
+        "sprint",
+        "area",
+      ],
+      searchItems: [
+        {
+          id: "kanban-statuses",
+          title: "Custom Kanban statuses",
+          description:
+            "Add, rename, reorder, and remove the columns for the Tasks Kanban Custom status board.",
+          keywords: [
+            "kanban",
+            "status",
+            "column",
+            "board",
+            "backlog",
+            "in progress",
+            "review",
+            "done",
+            "workflow",
+          ],
+        },
+      ],
+      content: (
+        <div className="space-y-6">
+          <Section
+            title="Kanban statuses"
+            description="Set up the columns for the Tasks Kanban Custom status board. Other @field boards (sprint, area, …) appear automatically as you tag tasks — no setup needed."
+          >
+            <KanbanStatusesRow settingId="kanban-statuses" />
+          </Section>
+          <button
+            type="button"
+            onClick={() => {
+              setSettingsOpen(false);
+              void openHelpView();
+            }}
+            className="inline-flex items-center gap-1 px-1 text-xs font-medium text-accent hover:underline"
+          >
+            Learn how the Tasks Kanban and custom fields work →
+          </button>
         </div>
       ),
     },
@@ -5777,6 +5844,143 @@ function ToggleRow({
         />
       </button>
     </label>
+  );
+}
+
+/** Slugify a human status name into the id stored in `kanban_statuses` and the
+ *  `@status:<id>` token (lower-case, non-alphanumerics to underscores). */
+function slugifyStatus(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\d]+/gu, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
+}
+
+/** Settings editor for the custom-status Kanban columns. Add, rename, reorder,
+ *  and remove columns without touching config.toml by hand; changes are written
+ *  straight back to the config file (and the per-vault view override). (#354) */
+function KanbanStatusesRow({ settingId }: { settingId?: string }): JSX.Element {
+  const statuses = useStore((s) => s.kanbanStatuses);
+  const setKanbanStatuses = useStore((s) => s.setKanbanStatuses);
+  const [rows, setRows] = useState<string[]>(statuses);
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    setRows(statuses);
+  }, [statuses]);
+
+  const commit = (next: string[]): void => {
+    const cleaned: string[] = [];
+    for (const raw of next) {
+      const id = slugifyStatus(raw);
+      if (id && !cleaned.includes(id)) cleaned.push(id);
+    }
+    setRows(cleaned);
+    setKanbanStatuses(cleaned);
+  };
+  const addDraft = (): void => {
+    const id = slugifyStatus(draft);
+    if (!id) return;
+    setDraft("");
+    commit([...rows, id]);
+  };
+  const removeAt = (i: number): void => commit(rows.filter((_, k) => k !== i));
+  const moveAt = (i: number, dir: -1 | 1): void => {
+    const j = i + dir;
+    if (j < 0 || j >= rows.length) return;
+    const next = [...rows];
+    [next[i], next[j]] = [next[j], next[i]];
+    commit(next);
+  };
+
+  return (
+    <div className="px-5 py-4" {...settingsSearchTargetProps(settingId)}>
+      <div className="text-sm font-medium text-ink-900">Custom Kanban statuses</div>
+      <div className="mt-1 text-xs leading-5 text-ink-500">
+        The columns for the Tasks Kanban “Custom status” board, in order. Saved to
+        your config file. Move a task by dragging its card, or focus it and press
+        Shift+H / Shift+L; you never have to type the tokens by hand.
+      </div>
+      <div className="mt-3 space-y-2">
+        {rows.length === 0 && (
+          <div className="rounded-md border border-dashed border-paper-300 px-3 py-2 text-xs text-ink-500">
+            No statuses yet. Add your first column below (for example Backlog, In
+            progress, Review, Done).
+          </div>
+        )}
+        {rows.map((id, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input
+              value={rows[i]}
+              onChange={(e) => {
+                const next = [...rows];
+                next[i] = e.target.value;
+                setRows(next);
+              }}
+              onBlur={() => commit(rows)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commit(rows);
+                }
+              }}
+              aria-label={`Status ${i + 1}`}
+              className="min-w-0 flex-1 rounded-md border border-paper-300 bg-paper-100 px-2.5 py-1.5 text-sm text-ink-900 outline-none focus:border-accent/60"
+            />
+            <button
+              type="button"
+              onClick={() => moveAt(i, -1)}
+              disabled={i === 0}
+              aria-label="Move up"
+              className="rounded-md px-2 py-1 text-xs text-ink-500 hover:bg-paper-200 disabled:opacity-40"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              onClick={() => moveAt(i, 1)}
+              disabled={i === rows.length - 1}
+              aria-label="Move down"
+              className="rounded-md px-2 py-1 text-xs text-ink-500 hover:bg-paper-200 disabled:opacity-40"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              onClick={() => removeAt(i)}
+              aria-label="Remove status"
+              className="rounded-md px-2 py-1 text-xs text-ink-500 hover:bg-rose-500/15 hover:text-rose-400"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addDraft();
+            }
+          }}
+          placeholder="New status, e.g. In progress"
+          aria-label="New status name"
+          data-kanban-status-input=""
+          className="min-w-0 flex-1 rounded-md border border-paper-300 bg-paper-100 px-2.5 py-1.5 text-sm text-ink-900 outline-none focus:border-accent/60"
+        />
+        <button
+          type="button"
+          onClick={addDraft}
+          className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
+        >
+          Add status
+        </button>
+      </div>
+    </div>
   );
 }
 

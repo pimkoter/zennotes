@@ -568,7 +568,10 @@ function openExternalFileWindow(absPath: string): void {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Same reason as the main window: keep this editor renderer live when the
+      // OS backgrounds/occludes it, so Vim keys and shortcuts don't freeze. (#350)
+      backgroundThrottling: false
     }
   })
 
@@ -953,7 +956,15 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
       // fully sandboxed preload context.
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Don't let Chromium throttle/freeze this renderer when it decides the
+      // window is "background" — that can happen while the window is still
+      // visually open (occlusion misdetection, display idle, some Wayland
+      // compositors). When throttled, the renderer's JS input pipeline stalls,
+      // so window-level shortcuts and CodeMirror's Vim keymap stop receiving
+      // keys and keystrokes fall through as literal text, until a focus event
+      // wakes it. The editor is the primary surface here, so keep it live. (#350)
+      backgroundThrottling: false
     }
   })
 
@@ -2921,7 +2932,10 @@ function openFloatingNoteWindow(relPath: string): void {
       // fully sandboxed preload context.
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Same reason as the main window: keep this editor renderer live when the
+      // OS backgrounds/occludes it, so Vim keys and shortcuts don't freeze. (#350)
+      backgroundThrottling: false
     }
   })
 
@@ -3009,7 +3023,10 @@ async function ensureQuickCaptureWindow(): Promise<BrowserWindow> {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Same reason as the main window: keep this editor renderer live when the
+      // OS backgrounds/occludes it, so Vim keys and shortcuts don't freeze. (#350)
+      backgroundThrottling: false
     }
   })
 
@@ -3506,10 +3523,17 @@ app.whenReady().then(async () => {
   //   - clipboard read/write → copy buttons and vim's "+y / "+p registers
   //     (without this, navigator.clipboard throws NotAllowedError, which on
   //     macOS and Wayland broke yank/paste to the system clipboard — #79)
+  //   - 'fileSystem'    → the File System Access API (showSaveFilePicker +
+  //     createWritable) behind Excalidraw's "Export image → Save to disk". The
+  //     native picker shows regardless, but the *write* is gated on this
+  //     permission check; denying it made every PNG/SVG drawing export fail
+  //     right after the save dialog with a filesystem write error (#355). The
+  //     path is user-initiated and user-picked, so granting it is safe.
   const GRANTED_PERMISSIONS = new Set<string>([
     'local-fonts',
     'clipboard-read',
-    'clipboard-sanitized-write'
+    'clipboard-sanitized-write',
+    'fileSystem'
   ])
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(GRANTED_PERMISSIONS.has(permission as string))

@@ -227,12 +227,17 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'Tasks, tags, archive, and trash are vault-wide views',
     body:
-      'Tasks scans every note for checkboxes, Tags lets you browse notes that carry all of the selected tags (toggle Match to Any for a union), Archive gives you a dedicated list of cold-storage notes, and Trash gives you a recovery surface for deleted notes without turning the left rail into a second browser.'
+      'Tasks scans every note for checkboxes, Tags lets you browse notes that carry all of the selected tags (toggle Match to Any for a union), Archive gives you a dedicated list of cold-storage notes, and Trash gives you a recovery surface for deleted notes without turning the left rail into a second browser. Selected tags accumulate so you can narrow across several at once; clear them with the Selected strip’s “Clear all”, the `c` key, or a right-click on any tag chip (which also offers “Unselect others” to keep just that one).'
   },
   {
     title: 'The Tasks calendar schedules and reschedules',
     body:
       "Switch Tasks to Calendar (button or `2`) to see tasks laid out by due date. A task written inside a daily note automatically shows on that day — no `due:` needed — so the day you wrote it on is the day it lands. Type in the box under the grid to add a task to the selected day (it’s created in that day’s daily note, offering to create the note first for a day that has none). Reschedule by dragging a task onto another day, or from the keyboard: `Tab` picks a task in the day list, `<` / `>` shifts it a day earlier/later, and `T` moves it to today."
+  },
+  {
+    title: 'The Tasks Kanban board, custom statuses, and any field',
+    body:
+      'Switch Tasks to Kanban (button or `3`) for a column board. "Group by" offers Status (Today / Upcoming / Waiting / Done, derived from due dates and `@waiting`), Priority, Folder, Custom status, and one entry per inline `@field` you use. Any task field works: tag tasks with `@key:value` tokens like `@status:review`, `@sprint:24`, or `@area:backend`, and each key becomes its own board with a column per value (auto-discovered, so it appears the moment you use it). For the status field, list the columns in order in `config.toml` under `[view]`, e.g. `kanban_statuses = ["backlog", "in_progress", "review", "done"]`; other fields sort their columns automatically. A note-level `status:` in frontmatter sets a default for that note’s tasks. Everything is keyboard-first: `h`/`l` move between columns, `j`/`k` between cards, `g` cycles the group-by, `Shift+H` / `Shift+L` send the focused card to the previous/next column (rewriting its `@field` token), and `Space`/`Enter` toggle/open. Drag does the same with the mouse. Rename status columns with `[kanban_column_titles]`.'
   },
   {
     title: 'Forward a task to another note',
@@ -748,6 +753,7 @@ export const HELP_SETTINGS: HelpSettingsSection[] = [
     title: 'Editor behavior',
     items: [
       { label: 'Vim mode', detail: 'Turn CodeMirror Vim bindings on or off for the editor and reference pane.' },
+      { label: 'Sync clipboard with Vim registers', detail: 'Mirror Vim and the system clipboard in both directions (like Vim\'s clipboard=unnamed): yank, delete, and change (y/d/c/x) copy to the clipboard, and p / P paste whatever is on the clipboard, so you can move text between ZenNotes and other apps without leaving normal mode. Only available when Vim mode is enabled.' },
       { label: 'Leader key hints', detail: 'Show a which-key style guide after pressing the configured Leader key so available leader actions stay visible while you decide. This setting is only available when Vim mode is enabled.' },
       { label: 'Leader hint behavior', detail: 'Choose whether leader hints auto-hide after a timeout or stay open until you dismiss them with the Leader key or Esc. These controls only appear when Vim mode is enabled.' },
       { label: 'Leader hint duration', detail: 'When behavior is Timed, control how long the which-key overlay stays visible and how long the pending leader sequence remains active after pressing the Leader key. This setting is only available in Vim mode.' },

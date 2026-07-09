@@ -360,6 +360,7 @@ export interface VaultViewSettings {
   tasksViewMode?: string
   kanbanGroupBy?: string
   kanbanColumnTitles?: Record<string, string>
+  kanbanStatuses?: string[]
   autoReveal?: boolean
   systemFolderLabels?: Record<string, unknown>
   unifiedSidebar?: boolean

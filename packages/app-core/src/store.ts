@@ -55,6 +55,7 @@ import {
   setTaskDueAtIndex,
   setTaskForwardedAtIndex,
   setTaskPriorityAtIndex,
+  setTaskFieldAtIndex,
   setTaskTextAtIndex,
   setTaskWaitingAtIndex,
   toggleTaskAtIndex,
@@ -178,6 +179,15 @@ export type CommandPaletteInitialMode = 'main' | 'vault'
 
 const PREFS_KEY = 'zen:prefs:v2'
 const WORKSPACE_KEY = 'zen:workspace:v1'
+
+/** Ask the active editor pane to reclaim keyboard focus. Dispatched as a DOM
+ *  event (handled in App.tsx via `focusEditorNormalMode`) so the store doesn't
+ *  have to import editor-focus, which imports the store. Used when a focused
+ *  panel (Tasks/Tags) closes so typing lands in the editor again. (#353) */
+function requestEditorFocus(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event('zen:focus-editor'))
+}
 /** Debounce for mirroring the workspace snapshot to the synced vault file —
  *  localStorage updates immediately; the file lags to bound sync churn. (#292) */
 const WORKSPACE_FILE_DEBOUNCE_MS = 1500
@@ -350,8 +360,8 @@ interface Prefs {
   /** Key sequence that exits insert mode (maps to <Esc>), e.g. "jk".
    *  Empty disables it. */
   vimInsertEscape: string
-  /** When true, Vim yank/delete/change also copy to the system clipboard
-   *  (like `set clipboard=unnamed`). */
+  /** When true, Vim yank/delete/change also copy to the system clipboard and
+   *  `p` / `P` paste from it (like `set clipboard=unnamed`). */
   vimYankToClipboard: boolean
   keymapOverrides: KeymapOverrides
   /** Enabled CSS overrides, keyed by filename (e.g. `"focus.css": "on"`). Persisted. */
@@ -476,12 +486,15 @@ interface Prefs {
   kanbanGroupBy: KanbanGroupBy
   /** Display-only Kanban column title overrides. Keyed by `${groupBy}:${columnId}`. */
   kanbanColumnTitles: Record<string, string>
+  /** Ordered status ids for the custom-status Kanban board (group-by "custom").
+   *  Each id matches an inline `@status:<id>` task token. Config-driven. (#354) */
+  kanbanStatuses: string[]
   /** True once the user has dismissed the first-run onboarding wizard. */
   hasCompletedOnboarding: boolean
 }
 
 export type TasksViewMode = 'list' | 'calendar' | 'kanban'
-export type KanbanGroupBy = 'status' | 'priority' | 'folder'
+export type KanbanGroupBy = 'status' | 'priority' | 'folder' | `field:${string}`
 /** How the Tags view combines multiple selected tags: `all` = intersection
  *  (AND, narrows), `any` = union (OR, widens). */
 export type TagMatchMode = 'all' | 'any'
@@ -491,6 +504,7 @@ export type TaskMutation =
   | { kind: 'set-waiting'; waiting: boolean }
   | { kind: 'set-priority'; priority: TaskLinePriority | null }
   | { kind: 'set-due'; due: string | null }
+  | { kind: 'set-field'; key: string; value: string | null }
   | { kind: 'set-text'; text: string }
 
 type AssetUndoEntry = { kind: 'delete-asset'; deleted: DeletedAsset; createdAt: number }
@@ -502,7 +516,29 @@ type ClosedTabEntry = {
 }
 
 const VALID_TASKS_VIEW_MODES: TasksViewMode[] = ['list', 'calendar', 'kanban']
-const VALID_KANBAN_GROUP_BYS: KanbanGroupBy[] = ['status', 'priority', 'folder']
+// The static, always-present group-bys. Field group-bys (`field:<key>`) are
+// dynamic and validated by shape. Column-title overrides only apply to these
+// static boards.
+const STATIC_KANBAN_GROUP_BYS = ['status', 'priority', 'folder'] as const
+const FIELD_GROUP_BY_RE = /^field:[a-z][a-z0-9_-]*$/
+
+export function isKanbanGroupBy(value: unknown): value is KanbanGroupBy {
+  return (
+    value === 'status' ||
+    value === 'priority' ||
+    value === 'folder' ||
+    (typeof value === 'string' && FIELD_GROUP_BY_RE.test(value))
+  )
+}
+
+/** Coerce a persisted group-by, migrating the pre-release `custom` id to
+ *  `field:status`. Falls back to `status`. */
+export function normalizeKanbanGroupBy(raw: unknown): KanbanGroupBy {
+  if (raw === 'custom') return 'field:status'
+  return isKanbanGroupBy(raw) ? raw : 'status'
+}
+const MAX_KANBAN_STATUSES = 24
+const MAX_KANBAN_STATUS_ID_LENGTH = 32
 const MAX_KANBAN_COLUMN_TITLE_LENGTH = 48
 const MAX_ASSET_UNDO_STACK = 20
 const MAX_CLOSED_TAB_STACK = 50
@@ -512,16 +548,44 @@ function normalizeKanbanColumnTitle(title: string): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
+// A static-board column-title key is `<status|priority|folder>:<columnId>`; a
+// field-board one is `field:<key>:<value>` (two colons). Accept both so inline
+// column renames survive a config round-trip on every board.
+const STATIC_COLUMN_TITLE_KEY_RE = /^[a-z-]+:[A-Za-z0-9_-]+$/
+const FIELD_COLUMN_TITLE_KEY_RE = /^field:[a-z][a-z0-9_-]*:[\p{L}\d][\p{L}\d/_-]*$/u
+
 function normalizeKanbanColumnTitles(raw: unknown): Record<string, string> {
   if (!raw || typeof raw !== 'object') return {}
 
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof value !== 'string') continue
-    if (!/^[a-z-]+:[A-Za-z0-9_-]+$/.test(key)) continue
-    if (!VALID_KANBAN_GROUP_BYS.some((group) => key.startsWith(`${group}:`))) continue
+    const isStatic =
+      STATIC_COLUMN_TITLE_KEY_RE.test(key) &&
+      STATIC_KANBAN_GROUP_BYS.some((group) => key.startsWith(`${group}:`))
+    const isField = FIELD_COLUMN_TITLE_KEY_RE.test(key)
+    if (!isStatic && !isField) continue
     const normalized = normalizeKanbanColumnTitle(value)
     if (normalized) out[key] = normalized
+  }
+  return out
+}
+
+// A status id is a tag-like slug, matching the `@status:<id>` grammar the task
+// parser accepts (see INLINE_STATUS_RE). Lower-cased, de-duplicated, capped. (#354)
+const KANBAN_STATUS_ID_RE = /^[\p{L}\d][\p{L}\d/_-]*$/u
+
+export function normalizeKanbanStatuses(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue
+    const id = entry.trim().toLowerCase().slice(0, MAX_KANBAN_STATUS_ID_LENGTH)
+    if (!KANBAN_STATUS_ID_RE.test(id) || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+    if (out.length >= MAX_KANBAN_STATUSES) break
   }
   return out
 }
@@ -547,12 +611,15 @@ export function viewPrefsFromVault(settings: VaultSettings | null | undefined): 
   }
   if (
     typeof v.kanbanGroupBy === 'string' &&
-    VALID_KANBAN_GROUP_BYS.includes(v.kanbanGroupBy as KanbanGroupBy)
+    (isKanbanGroupBy(v.kanbanGroupBy) || v.kanbanGroupBy === 'custom')
   ) {
-    patch.kanbanGroupBy = v.kanbanGroupBy as KanbanGroupBy
+    patch.kanbanGroupBy = normalizeKanbanGroupBy(v.kanbanGroupBy)
   }
   if (v.kanbanColumnTitles && typeof v.kanbanColumnTitles === 'object') {
     patch.kanbanColumnTitles = normalizeKanbanColumnTitles(v.kanbanColumnTitles)
+  }
+  if (Array.isArray(v.kanbanStatuses)) {
+    patch.kanbanStatuses = normalizeKanbanStatuses(v.kanbanStatuses)
   }
   if (typeof v.autoReveal === 'boolean') patch.autoReveal = v.autoReveal
   if (v.systemFolderLabels && typeof v.systemFolderLabels === 'object') {
@@ -654,6 +721,7 @@ export const DEFAULT_PREFS: Prefs = {
   tasksViewMode: 'list',
   kanbanGroupBy: 'status',
   kanbanColumnTitles: {},
+  kanbanStatuses: [],
   hasCompletedOnboarding: false
 }
 /** Coerce any loaded prefs blob into a valid Prefs object, dropping
@@ -888,11 +956,9 @@ function normalizePrefs(p: Partial<Prefs>): Prefs {
       p.tasksViewMode && VALID_TASKS_VIEW_MODES.includes(p.tasksViewMode)
         ? p.tasksViewMode
         : DEFAULT_PREFS.tasksViewMode,
-    kanbanGroupBy:
-      p.kanbanGroupBy && VALID_KANBAN_GROUP_BYS.includes(p.kanbanGroupBy)
-        ? p.kanbanGroupBy
-        : DEFAULT_PREFS.kanbanGroupBy,
+    kanbanGroupBy: normalizeKanbanGroupBy(p.kanbanGroupBy),
     kanbanColumnTitles: normalizeKanbanColumnTitles(p.kanbanColumnTitles),
+    kanbanStatuses: normalizeKanbanStatuses(p.kanbanStatuses),
     hasCompletedOnboarding:
       typeof p.hasCompletedOnboarding === 'boolean'
         ? p.hasCompletedOnboarding
@@ -1310,6 +1376,15 @@ function applyTaskMutationsToTask(task: VaultTask, mutations: TaskMutation[]): V
         if (next.due !== due) next = { ...next, due }
         break
       }
+      case 'set-field': {
+        const value = m.value ?? undefined
+        const fields = { ...next.fields }
+        if (value == null) delete fields[m.key]
+        else fields[m.key] = value
+        next = { ...next, fields }
+        if (m.key === 'status') next = { ...next, status: value }
+        break
+      }
       case 'set-text': {
         const content = m.text.trim()
         if (next.content !== content) next = { ...next, content }
@@ -1515,6 +1590,7 @@ function collectPrefs(s: {
   tasksViewMode: TasksViewMode
   kanbanGroupBy: KanbanGroupBy
   kanbanColumnTitles: Record<string, string>
+  kanbanStatuses: string[]
   hasCompletedOnboarding: boolean
 }): Prefs {
   return {
@@ -1582,6 +1658,7 @@ function collectPrefs(s: {
     tasksViewMode: s.tasksViewMode,
     kanbanGroupBy: s.kanbanGroupBy,
     kanbanColumnTitles: s.kanbanColumnTitles,
+    kanbanStatuses: s.kanbanStatuses,
     hasCompletedOnboarding: s.hasCompletedOnboarding
   }
 }
@@ -2076,6 +2153,8 @@ interface Store {
   kanbanGroupBy: KanbanGroupBy
   /** Display-only column title overrides for the Tasks Kanban view. */
   kanbanColumnTitles: Record<string, string>
+  /** Ordered status ids for the custom-status Kanban board (config-driven). */
+  kanbanStatuses: string[]
   /** True once the user has finished or skipped the first-run onboarding. */
   hasCompletedOnboarding: boolean
   /** ISO YYYY-MM-DD currently selected in the Calendar view. null = today. */
@@ -2228,6 +2307,9 @@ interface Store {
     columnId: string,
     title: string | null
   ) => void
+  /** Replace the ordered custom-status list (from Settings). Normalized and
+   *  written back to config.toml + the per-vault view override. (#354) */
+  setKanbanStatuses: (statuses: string[]) => void
   setTasksCalendarSelectedDate: (iso: string | null) => void
   setTasksCalendarMonthAnchor: (iso: string | null) => void
   setTaskCursorIndex: (idx: number) => void
@@ -3492,6 +3574,7 @@ export const useStore = create<Store>((set, get) => {
   tasksViewMode: loadPrefs().tasksViewMode,
   kanbanGroupBy: loadPrefs().kanbanGroupBy,
   kanbanColumnTitles: loadPrefs().kanbanColumnTitles,
+  kanbanStatuses: loadPrefs().kanbanStatuses,
   hasCompletedOnboarding: loadPrefs().hasCompletedOnboarding,
   vaultTasks: [],
   customThemes: [],
@@ -3633,6 +3716,9 @@ export const useStore = create<Store>((set, get) => {
       }
     }
     set({ tasksFilter: '', taskCursorIndex: 0 })
+    // The Tasks panel held keyboard focus; hand it back to the editor so the
+    // reopened note takes typing immediately, without a pane jump or click. (#353)
+    requestEditorFocus()
   },
 
   openTagView: async (tag) => {
@@ -3666,6 +3752,8 @@ export const useStore = create<Store>((set, get) => {
       }
     }
     set({ selectedTags: [] })
+    // Same as closeTasksView: return keyboard focus to the editor pane. (#353)
+    requestEditorFocus()
   },
 
   openHelpView: async () => {
@@ -4068,6 +4156,9 @@ export const useStore = create<Store>((set, get) => {
         case 'set-due':
           nextBody = setTaskDueAtIndex(nextBody, task.taskIndex, m.due)
           break
+        case 'set-field':
+          nextBody = setTaskFieldAtIndex(nextBody, task.taskIndex, m.key, m.value)
+          break
         case 'set-text':
           nextBody = setTaskTextAtIndex(nextBody, task.taskIndex, m.text)
           break
@@ -4294,6 +4385,12 @@ export const useStore = create<Store>((set, get) => {
     set({ kanbanColumnTitles: nextTitles })
     savePrefs(collectPrefs(get()))
     persistVaultViewOverride({ kanbanColumnTitles: nextTitles })
+  },
+  setKanbanStatuses: (statuses) => {
+    const next = normalizeKanbanStatuses(statuses)
+    set({ kanbanStatuses: next })
+    savePrefs(collectPrefs(get()))
+    persistVaultViewOverride({ kanbanStatuses: next })
   },
   setTasksCalendarSelectedDate: (iso) => set({ tasksCalendarSelectedDate: iso }),
   setTasksCalendarMonthAnchor: (iso) => set({ tasksCalendarMonthAnchor: iso }),

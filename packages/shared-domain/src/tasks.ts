@@ -51,6 +51,13 @@ export interface VaultTask {
   priority?: TaskPriority
   /** True if `@waiting` appears anywhere on the line. */
   waiting: boolean
+  /** All inline `@key:value` fields on the line (lower-cased), e.g.
+   *  `@status:review @sprint:24`. Any key can drive a Kanban group-by. Optional
+   *  so hand-built task fixtures stay terse; the parser always sets it. (#354) */
+  fields?: Record<string, string>
+  /** Convenience accessor for `fields.status`, falling back to the note's
+   *  `status:` frontmatter. The default Kanban custom field. (#354) */
+  status?: string
   /** Inline `#tags` found on the line. */
   tags: string[]
 }
@@ -145,6 +152,12 @@ function parseNoteDefaults(body: string): { defaults: NoteDefaults; fmEndOffset:
 const INLINE_DUE_RE = /(?:^|\s)due:\s*(\S+)/i
 const INLINE_PRIORITY_RE = /(?:^|\s)!(high|med|medium|low|h|m|l)\b/i
 const INLINE_WAITING_RE = /(?:^|\s)@waiting\b/i
+// Inline free-form task fields: `@<key>:<value>`, e.g. `@status:review` or
+// `@sprint:24`. The colon distinguishes them from `@waiting` and the
+// `@today`/`@tomorrow` date helpers (which have no colon). Any field can drive a
+// Kanban group-by; `status` is simply the default one. Global so a line can
+// carry several fields. (#354)
+const INLINE_FIELD_RE = /(?:^|\s)@([a-z][a-z0-9_-]*):([\p{L}\d][\p{L}\d/_-]*)/giu
 // Match #tag-like tokens but only when preceded by start-of-string/whitespace.
 // Letters in any script (Cyrillic/CJK/…) plus digits, `_`, `-`, `/` (#205).
 const INLINE_TAG_RE = /(?:^|\s)#([\p{L}\d][\p{L}\d/_-]*)/gu
@@ -153,6 +166,7 @@ interface ExtractedTokens {
   due?: string
   priority?: TaskPriority
   waiting: boolean
+  fields: Record<string, string>
   tags: string[]
   /** Tail with matched tokens stripped, for clean display. */
   stripped: string
@@ -162,6 +176,7 @@ function extractTokens(tail: string): ExtractedTokens {
   let due: string | undefined
   let priority: TaskPriority | undefined
   let waiting = false
+  const fields: Record<string, string> = {}
   const tags: string[] = []
   let stripped = tail
 
@@ -183,6 +198,17 @@ function extractTokens(tail: string): ExtractedTokens {
     stripped = stripped.replace(INLINE_WAITING_RE, ' ')
   }
 
+  INLINE_FIELD_RE.lastIndex = 0
+  let fieldMatch: RegExpExecArray | null
+  while ((fieldMatch = INLINE_FIELD_RE.exec(stripped))) {
+    const key = fieldMatch[1].toLowerCase()
+    const value = fieldMatch[2].toLowerCase()
+    if (!(key in fields)) fields[key] = value
+  }
+  if (Object.keys(fields).length > 0) {
+    stripped = stripped.replace(INLINE_FIELD_RE, ' ')
+  }
+
   INLINE_TAG_RE.lastIndex = 0
   let tm: RegExpExecArray | null
   while ((tm = INLINE_TAG_RE.exec(tail))) {
@@ -194,6 +220,7 @@ function extractTokens(tail: string): ExtractedTokens {
     due,
     priority,
     waiting,
+    fields,
     tags,
     stripped: stripped.replace(/\s+/g, ' ').trim()
   }
@@ -265,6 +292,13 @@ export function parseTasksFromBody(body: string, ctx: ParseTasksContext): VaultT
       due: tokens.due ?? defaults.due,
       priority: tokens.priority ?? defaults.priority,
       waiting: tokens.waiting,
+      // Fold the note's frontmatter `status:` default into the fields map so the
+      // board can group by `fields.status` uniformly.
+      fields:
+        defaults.status && !tokens.fields.status
+          ? { ...tokens.fields, status: defaults.status }
+          : tokens.fields,
+      status: tokens.fields.status ?? defaults.status,
       tags: tokens.tags
     })
 

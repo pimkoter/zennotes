@@ -222,6 +222,46 @@ export function setTaskDueAtIndex(
   })
 }
 
+// A valid inline-field key is a lowercase slug (mirrors INLINE_FIELD_RE in
+// tasks.ts). Guarding here keeps the dynamic RegExp safe and predictable.
+const FIELD_KEY_RE = /^[a-z][a-z0-9_-]*$/
+
+/** Replace, insert, or remove an inline `@<key>:<value>` field token on the
+ *  task line at `taskIndex`. Pass `value = null` to clear it. Generalizes the
+ *  status token so any field (`status`, `sprint`, `area`, …) round-trips the
+ *  same way. (#354) */
+export function setTaskFieldAtIndex(
+  markdown: string,
+  taskIndex: number,
+  key: string,
+  value: string | null
+): string {
+  if (!FIELD_KEY_RE.test(key)) return markdown
+  const tokenRe = new RegExp(`(^|\\s)@${key}:\\S+`, 'i')
+  return editTaskAtIndex(markdown, taskIndex, (match) => {
+    const prefix = match[1]
+    const checkChar = match[2]
+    const tailWithBracket = match[3]
+    if (!tailWithBracket.startsWith(']')) return null
+    const tail = tailWithBracket.slice(1)
+    const cleaned = tail.replace(tokenRe, '$1').replace(/\s{2,}/g, ' ')
+    const nextTail = value
+      ? `${cleaned.replace(/\s+$/u, '')} @${key}:${value}`
+      : cleaned.replace(/\s+$/u, '')
+    return `${prefix}${checkChar}]${nextTail}`
+  })
+}
+
+/** Replace, insert, or remove the `@status:<id>` token. Thin wrapper over
+ *  {@link setTaskFieldAtIndex} for the default `status` field. (#354) */
+export function setTaskStatusAtIndex(
+  markdown: string,
+  taskIndex: number,
+  status: string | null
+): string {
+  return setTaskFieldAtIndex(markdown, taskIndex, 'status', status)
+}
+
 /** Replace everything after the checkbox on the task line at `taskIndex` with
  *  `text` (verbatim — the caller owns any `due:`/`!priority` tokens). Used by
  *  inline task editing. */

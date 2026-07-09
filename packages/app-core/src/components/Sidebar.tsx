@@ -425,6 +425,8 @@ export function Sidebar(): JSX.Element {
   const assetCount = useStore((s) => s.assetFiles.length);
   const openTagView = useStore((s) => s.openTagView);
   const selectedTags = useStore((s) => s.selectedTags);
+  const setSelectedTags = useStore((s) => s.setSelectedTags);
+  const toggleTagSelection = useStore((s) => s.toggleTagSelection);
   const tagsViewActive = useStore(isTagsViewActive);
   const setSearchOpen = useStore((s) => s.setSearchOpen);
   const createAndOpen = useStore((s) => s.createAndOpen);
@@ -2409,7 +2411,23 @@ export function Sidebar(): JSX.Element {
   const tagMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (!tagMenu) return [];
     const tag = tagMenu.tag;
+    // When the Tags view is filtering, offer selection actions up top so the
+    // sidebar can clear the filter without hunting for each chip's ×. (#356)
+    const selectionItems: ContextMenuItem[] =
+      tagsViewActive && selectedTags.length > 0
+        ? [
+            ...(selectedTags.includes(tag)
+              ? [{ label: `Deselect #${tag}`, onSelect: () => toggleTagSelection(tag) }]
+              : []),
+            ...(selectedTags.length > 1
+              ? [{ label: "Unselect others", onSelect: () => setSelectedTags([tag]) }]
+              : []),
+            { label: "Clear all tags", onSelect: () => setSelectedTags([]) },
+            { kind: "separator" },
+          ]
+        : [];
     return [
+      ...selectionItems,
       {
         label: `Copy #${tag}`,
         onSelect: async () => {
@@ -2453,7 +2471,15 @@ export function Sidebar(): JSX.Element {
         },
       },
     ];
-  }, [tagMenu, renameTag, deleteTag]);
+  }, [
+    tagMenu,
+    renameTag,
+    deleteTag,
+    tagsViewActive,
+    selectedTags,
+    setSelectedTags,
+    toggleTagSelection,
+  ]);
 
   const vaultMenuItems = useMemo<ContextMenuItem[]>(() => {
     const items: ContextMenuItem[] = [];
