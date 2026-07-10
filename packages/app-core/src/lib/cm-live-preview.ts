@@ -631,6 +631,17 @@ class LocalExcalidrawWidget extends WidgetType {
       // hits the generic asset viewer, which offers to download the file. (#360)
       void useStore.getState().openNoteInTab(this.resolvedPath)
     })
+    // Right-click shows the drawing menu (Open / Copy image) rather than the
+    // editor's plain text context menu. (#360)
+    image.addEventListener('contextmenu', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      window.dispatchEvent(
+        new CustomEvent('zen:excalidraw-embed-menu', {
+          detail: { path: this.resolvedPath, x: event.clientX, y: event.clientY }
+        })
+      )
+    })
 
     frame.append(image)
 

@@ -70,6 +70,16 @@ export function ExcalidrawPreview({
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
       onClick={onClick}
+      onContextMenu={(e) => {
+        // Show the drawing-specific menu instead of the editor's text menu.
+        e.preventDefault()
+        e.stopPropagation()
+        window.dispatchEvent(
+          new CustomEvent('zen:excalidraw-embed-menu', {
+            detail: { path, x: e.clientX, y: e.clientY }
+          })
+        )
+      }}
       onKeyDown={
         onClick
           ? (e) => {
