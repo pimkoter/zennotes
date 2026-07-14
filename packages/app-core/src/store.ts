@@ -2363,6 +2363,11 @@ interface Store {
   renameDatabase: (csvPath: string, newTitle: string) => Promise<void>
   /** Optimistically replace a database's rows and debounce-persist the CSV. */
   updateDatabaseRows: (csvPath: string, next: DatabaseDoc) => void
+  /** Delete rows AND purge their record-page mappings from the sidecar (a plain
+   *  row write only touches the CSV, so a stale UUID would otherwise linger in
+   *  schema.json). When a deleted row has a linked page note, prompt whether to
+   *  trash the note too or keep it as a standalone note. (#391) */
+  deleteDatabaseRows: (csvPath: string, rowIds: string[]) => Promise<void>
   /** Optimistically replace a database's schema/views and debounce-persist sidecar + CSV. */
   updateDatabaseSchema: (csvPath: string, next: DatabaseDoc) => void
   /** Re-read a database from disk after an external change (skips our own write echoes). */
@@ -4021,6 +4026,68 @@ export const useStore = create<Store>((set, get) => {
     set((s) => ({ databases: { ...s.databases, [csvPath]: next } }))
     scheduleDatabaseWrite(csvPath, 'rows', () => get().databases[csvPath])
     remirrorOpenRecordPages(csvPath, get)
+  },
+  deleteDatabaseRows: async (csvPath, rowIds) => {
+    const doc = get().databases[csvPath]
+    if (!doc) return
+    const ids = [...new Set(rowIds)].filter((id) => doc.rows.some((r) => r.id === id))
+    if (ids.length === 0) return
+
+    // Deleted rows that carry a linked record page — the ones worth asking about.
+    const attached = ids
+      .map((id) => doc.pages?.[id])
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+
+    let trashNotes = false
+    if (attached.length > 0) {
+      const many = attached.length > 1
+      trashNotes = await confirmApp({
+        title: many ? `Delete ${ids.length} rows and their notes?` : 'Delete row and its linked note?',
+        description: many
+          ? `${attached.length} of these rows have a linked page note. Move those notes to Trash too, or keep them as standalone notes? The rows are deleted either way.`
+          : 'This row has a linked page note. Move it to Trash too, or keep it as a standalone note? The row is deleted either way.',
+        confirmLabel: many ? 'Delete rows + notes' : 'Delete row + note',
+        cancelLabel: many ? 'Keep notes' : 'Keep note',
+        danger: true
+      })
+    }
+
+    // Re-read after the (async) prompt so a concurrent edit isn't clobbered.
+    const latest = get().databases[csvPath]
+    if (!latest) return
+    const removeSet = new Set(ids)
+    const nextPages = { ...(latest.pages ?? {}) }
+    const nextFlags = { ...(latest.pageHasContent ?? {}) }
+    const prunedPaths: string[] = []
+    for (const id of ids) {
+      const pagePath = nextPages[id]
+      if (pagePath) {
+        prunedPaths.push(pagePath)
+        delete nextPages[id]
+        delete nextFlags[id]
+      }
+    }
+    const pagesChanged = prunedPaths.length > 0
+    const next: DatabaseDoc = {
+      ...latest,
+      rows: latest.rows.filter((r) => !removeSet.has(r.id)),
+      ...(pagesChanged ? { pages: nextPages, pageHasContent: nextFlags } : {})
+    }
+    set((s) => ({ databases: { ...s.databases, [csvPath]: next } }))
+    // A pruned page mapping lives in the sidecar, so force a schema write; a
+    // plain 'rows' write only rewrites the CSV and would leave the stale entry.
+    scheduleDatabaseWrite(csvPath, pagesChanged ? 'schema' : 'rows', () => get().databases[csvPath])
+    remirrorOpenRecordPages(csvPath, get)
+
+    if (trashNotes) {
+      for (const pagePath of prunedPaths) {
+        try {
+          await window.zen.moveToTrash(pagePath)
+        } catch (err) {
+          console.error('trash record page failed', err)
+        }
+      }
+    }
   },
   updateDatabaseSchema: (csvPath, next) => {
     set((s) => ({ databases: { ...s.databases, [csvPath]: next } }))
