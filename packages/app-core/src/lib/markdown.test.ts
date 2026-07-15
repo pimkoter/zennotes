@@ -194,3 +194,51 @@ describe('currency vs inline math (reading view matches the editor)', () => {
     expect(renderMarkdown('$$\n\\int_0^1 x\\,dx\n$$')).toContain('katex')
   })
 })
+
+describe('block math fence normalization (#399, reading view matches the editor)', () => {
+  const text = (html: string): string =>
+    html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+
+  it('closes a block whose $$ trails the last content line', () => {
+    const html = renderMarkdown('$$\n\\frac{a}{b} = c\nx + y = z$$\n\nAfter paragraph.')
+    expect(html).toContain('katex-display')
+    expect(text(html)).toContain('After paragraph.')
+    expect(text(html)).not.toContain('$$')
+  })
+
+  it('accepts content right after the opening $$', () => {
+    const html = renderMarkdown('$$\\frac{a}{b} = c\nx = y\n$$\n\nAfter paragraph.')
+    expect(html).toContain('katex-display')
+    expect(text(html)).toContain('After paragraph.')
+    expect(text(html)).not.toContain('$$')
+  })
+
+  it('renders a single-line $$x^2$$ as a display block, like the editor', () => {
+    const html = renderMarkdown('$$x^2$$\n\nAfter paragraph.')
+    expect(html).toContain('katex-display')
+    expect(text(html)).toContain('After paragraph.')
+  })
+
+  it('leaves canonical fenced blocks byte-identical', () => {
+    const canonical = '$$\n\\int_0^1 x\\,dx\n$$\n\nAfter paragraph.'
+    const html = renderMarkdown(canonical)
+    expect(html).toContain('katex-display')
+    expect(text(html)).toContain('After paragraph.')
+  })
+
+  it('does not touch $$ inside fenced code', () => {
+    const html = renderMarkdown('```\n$$\nx + y = z$$\n```\n\nAfter paragraph.')
+    expect(html).not.toContain('katex')
+    // rehype-highlight may tokenize the code content; compare tag-stripped text.
+    expect(text(html)).toContain('z$$')
+    expect(text(html)).toContain('After paragraph.')
+  })
+
+  it('passes editor-rejected shapes through unchanged', () => {
+    // Mid-line `$$` and empty blocks are not editor-legal blocks; the
+    // normalizer must not invent fences for them.
+    expect(renderMarkdown('$$a$$b$$')).not.toContain('katex-display')
+    expect(renderMarkdown('$$ $$')).not.toContain('katex-display')
+    expect(() => renderMarkdown('$$\nunclosed to the end')).not.toThrow()
+  })
+})
