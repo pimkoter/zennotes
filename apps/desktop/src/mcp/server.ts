@@ -135,7 +135,7 @@ const TOOLS: ToolDef[] = [
     schema: {
       name: 'list_notes',
       description:
-        "List notes in the vault with metadata (title, folder, tags, wikilinks, excerpt, timestamps). Optional filters narrow by folder, tag, or wikilink target. Use this before editing to pick the right note. Trashed notes are included only when folder='trash' is explicit. The returned `path` field is the canonical reference — pass it back verbatim to read_note / write_note / move_note. In `primaryNotesLocation: root` vaults, inbox notes have a path WITHOUT an `inbox/` prefix (e.g. `MyNote.md`); never add one.",
+        "List notes in the vault with metadata (title, folder, tags, wikilinks, excerpt, timestamps). Optional filters narrow by folder, tag, or wikilink target. Use this before editing to pick the right note. Trashed notes are included only when folder='trash' is explicit. The returned `path` field is the canonical reference — pass it back verbatim to read_note / write_note / move_note. In `primaryNotesLocation: root` vaults, inbox notes have a path WITHOUT an `inbox/` prefix (e.g. `MyNote.md`); never add one. Each note also carries `link`, a clickable zennotes:// URL that opens it in the app; use it verbatim when rendering note titles as markdown links for the user.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -641,6 +641,11 @@ const TOOLS: ToolDef[] = [
             type: 'array',
             items: { type: 'string' },
             description: 'Alternative to tag: require ALL of these tags.'
+          },
+          includeExcluded: {
+            type: 'boolean',
+            description:
+              'Also scan notes opted out of Tasks (frontmatter `tasks: false` / `tasks: note`) and folders on the vault\'s excluded list. Default false: excluded tasks are invisible.'
           }
         }
       }
@@ -652,6 +657,7 @@ const TOOLS: ToolDef[] = [
         | 'waiting'
         | 'all'
         | undefined) ?? 'open'
+      const includeExcluded = args.includeExcluded === true
       const priority = optionalString(args, 'priority') as 'high' | 'med' | 'low' | undefined
       const dueBefore = optionalString(args, 'dueBefore')
       const dueAfter = optionalString(args, 'dueAfter')
@@ -660,7 +666,7 @@ const TOOLS: ToolDef[] = [
       const folder = args.folder
         ? (requireFolder(args, 'folder') as 'inbox' | 'quick' | 'archive')
         : null
-      const all = await scanAllTasks(vault)
+      const all = await scanAllTasks(vault, includeExcluded ? { includeExcluded: true } : undefined)
       return all.filter((t) => {
         if (folder && t.noteFolder !== folder) return false
         if (status === 'open' && (t.checked || t.waiting)) return false

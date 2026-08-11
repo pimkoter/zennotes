@@ -18,12 +18,14 @@ import {
   isTagsViewActive,
   isTasksViewActive,
   isTrashViewActive,
+  isWorkflowsViewActive,
   useStore,
 } from "../store";
 import { Button } from "./ui/Button";
 import { confirmMoveToTrash } from "../lib/confirm-trash";
 import { buildMoveNotePrompt, parseMoveNoteTarget } from "../lib/move-note";
-import { extractTags } from "../lib/tags";
+import { buildTagTree, extractTags, flattenTagTree } from "../lib/tags";
+import { isTypstPreamblePath, resolveTypstPreambleFolder } from "../lib/typst-preamble";
 import type { AssetMeta, FolderColorId, FolderEntry, FolderIconId, NoteFolder, NoteMeta } from "@shared/ipc";
 import type { NoteSortOrder } from "../store";
 import { isArchiveTabPath } from "@shared/archive";
@@ -51,6 +53,7 @@ import {
   SortIcon,
   TargetIcon,
   TrashIcon,
+  WorkflowIcon,
 } from "./icons";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ResizeHandle } from "./ResizeHandle";
@@ -78,7 +81,9 @@ import {
   normalizeVaultSettings,
   noteFolderSubpath,
   parseFavoriteFolderKey,
+  sidebarRevealTarget,
 } from "../lib/vault-layout";
+import { resolveFolderPath } from "@shared/system-folder-paths";
 import {
   getCurrentDragPayload,
   hasZenItem,
@@ -91,6 +96,7 @@ import { resolveSystemFolderLabels } from "../lib/system-folder-labels";
 import { assetTabPath } from "../lib/asset-tabs";
 import {
   csvPathForFormDir,
+  csvPathFromDatabaseTab,
   FORM_DIR_SUFFIX,
   formTitleFromDir,
   isFormDirName,
@@ -262,7 +268,8 @@ function vaultRelativeFolderPath(
   vaultSettings: ReturnType<typeof useStore.getState>["vaultSettings"],
 ): string {
   if (folder === "inbox" && isPrimaryNotesAtRoot(vaultSettings)) return subpath;
-  return subpath ? `${folder}/${subpath}` : folder;
+  const folderPath = resolveFolderPath(folder, vaultSettings.systemFolderPaths);
+  return subpath ? `${folderPath}/${subpath}` : folderPath;
 }
 
 type SidebarSelectionItem =
@@ -403,6 +410,9 @@ export function Sidebar(): JSX.Element {
   const sidebarCursorIndex = useStore((s) => s.sidebarCursorIndex);
   const activeNote = useStore((s) => s.activeNote);
   const activeDirty = useStore((s) => s.activeDirty);
+  const preambleFolder = useStore((s) =>
+    resolveTypstPreambleFolder(s.vaultSettings?.typstPreambles?.folder),
+  );
   const vaultSettings = useStore((s) => s.vaultSettings);
   const rootContentHiddenByInboxMode = useStore((s) => s.rootContentHiddenByInboxMode);
   const rootContentBannerDismissed = useStore((s) => s.rootContentBannerDismissed);
@@ -412,6 +422,9 @@ export function Sidebar(): JSX.Element {
   const setView = useStore((s) => s.setView);
   const openTasksView = useStore((s) => s.openTasksView);
   const tasksViewActive = useStore(isTasksViewActive);
+  const openWorkflowsView = useStore((s) => s.openWorkflowsView);
+  const workflowsViewActive = useStore(isWorkflowsViewActive);
+  const workflowsEnabled = useStore((s) => s.workflowsEnabled);
   const openQuickNotesView = useStore((s) => s.openQuickNotesView);
   const quickNotesViewActive = useStore(isQuickNotesViewActive);
   const openHelpView = useStore((s) => s.openHelpView);
@@ -434,6 +447,7 @@ export function Sidebar(): JSX.Element {
   const newDrawing = useStore((s) => s.newDrawing);
   const newDatabase = useStore((s) => s.newDatabase);
   const toggleFavorite = useStore((s) => s.toggleFavorite);
+  const toggleTasksExcludedFolder = useStore((s) => s.toggleTasksExcludedFolder);
   const createDatabase = useStore((s) => s.createDatabase);
   const createNoteInChosenFolder = useStore((s) => s.createNoteInChosenFolder);
   const openTemplatePaletteForFolder = useStore((s) => s.openTemplatePaletteForFolder);
@@ -447,6 +461,9 @@ export function Sidebar(): JSX.Element {
   const deleteTag = useStore((s) => s.deleteTag);
   const tagsCollapsed = useStore((s) => s.tagsCollapsed);
   const setTagsCollapsed = useStore((s) => s.setTagsCollapsed);
+  const nestedTags = useStore((s) => s.nestedTags);
+  const collapsedTagNodes = useStore((s) => s.collapsedTagNodes);
+  const toggleCollapseTagNode = useStore((s) => s.toggleCollapseTagNode);
   const showSidebarChevrons = useStore((s) => s.showSidebarChevrons);
   const createFolderAction = useStore((s) => s.createFolder);
   const renameFolderAction = useStore((s) => s.renameFolder);
@@ -458,6 +475,11 @@ export function Sidebar(): JSX.Element {
   const deleteAssetAction = useStore((s) => s.deleteAsset);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const setSidebarWidth = useStore((s) => s.setSidebarWidth);
+  // Footer degrade ladder (#539). The width is the pref, which is exactly the
+  // rendered width (the aside is fixed-width and shrink-0), so this stays a
+  // plain prop check instead of a resize observer.
+  const footerShowsCount = sidebarWidth >= 310;
+  const footerShowsLabels = sidebarWidth >= 265;
   const noteSortOrder = useStore((s) => s.noteSortOrder);
   const manualNoteOrder = useStore((s) => s.manualNoteOrder);
   const setNoteSortOrder = useStore((s) => s.setNoteSortOrder);
@@ -1343,20 +1365,26 @@ export function Sidebar(): JSX.Element {
    * can feel inert unless the note happens to live inside a currently
    * collapsed folder.
    */
+  // A database tab is a zen:// virtual path wrapping a real data.csv path;
+  // unwrap it so the reveal can walk to the .base folder row. Other zen://
+  // tabs (assets, tasks, help...) have no place in the tree and stay out.
   const activePath =
-    selectedPath && !selectedPath.startsWith("zen://") ? selectedPath : null;
+    selectedPath && !selectedPath.startsWith("zen://")
+      ? selectedPath
+      : csvPathFromDatabaseTab(selectedPath);
   useEffect(() => {
     if (!autoReveal || !activePath) return;
     const startedAt = performance.now();
-    const parts = activePath.split("/");
-    const folder = parts[0] as NoteFolder;
-    // Collect every ancestor key we need to make sure is expanded.
-    const ancestors: string[] = [`${folder}:`];
-    let acc = "";
-    for (let i = 1; i < parts.length - 1; i++) {
-      acc = acc ? `${acc}/${parts[i]}` : parts[i];
-      ancestors.push(`${folder}:${acc}`);
-    }
+    // Classified through the same settings-aware helpers the tree uses; see
+    // sidebarRevealTarget for why the raw path's first segment is not the
+    // folder (Vault Root mode, remapped system folders). Settings are read
+    // at effect time, not subscribed: with vaultSettings in the dependency
+    // array, every settings write (a favorite toggle, a folder color, a
+    // remote resync) re-ran the reveal and yanked the sidebar scroll back
+    // to the active note while the user was browsing elsewhere.
+    const target = sidebarRevealTarget(activePath, useStore.getState().vaultSettings);
+    if (!target) return;
+    const { folder, parts, ancestors } = target;
     const prev = new Set(useStore.getState().collapsedFolders);
     let changed = false;
     for (const key of ancestors) {
@@ -1382,10 +1410,11 @@ export function Sidebar(): JSX.Element {
         return;
       }
 
-      const parts = activePath.split("/");
-      const folder = parts[0] as NoteFolder;
-      for (let i = parts.length - 1; i >= 1; i--) {
-        const subpath = parts.slice(1, i).join("/");
+      // i reaches 0 so the walk can land on the folder's own root row
+      // (data-sidebar-subpath=""), which is also the only candidate for a
+      // note that sits directly in the folder root (parts.length === 1).
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const subpath = parts.slice(0, i).join("/");
         const folderEl = document.querySelector(
           `[data-sidebar-type="folder"][data-sidebar-folder="${folder}"][data-sidebar-subpath="${escapeForAttr(subpath)}"]`,
         ) as HTMLElement | null;
@@ -1420,7 +1449,10 @@ export function Sidebar(): JSX.Element {
   useEffect(() => {
     const path = activeNote?.path ?? null;
     const body = activeNote?.body ?? null;
-    if (!path || body == null || !activeDirty) {
+    // Editing a Typst preamble must not put its `#let` / `#var` tokens back
+    // into the tag list that the index deliberately leaves them out of (#562).
+    const isPreamble = path != null && isTypstPreamblePath(path, preambleFolder);
+    if (!path || body == null || !activeDirty || isPreamble) {
       setActiveBodyTagSnapshot((current) => (current === null ? current : null));
       return;
     }
@@ -1471,7 +1503,7 @@ export function Sidebar(): JSX.Element {
         window.cancelIdleCallback(idleId);
       }
     };
-  }, [activeDirty, activeNote?.body, activeNote?.path]);
+  }, [activeDirty, activeNote?.body, activeNote?.path, preambleFolder]);
 
   // Aggregate hashtags across non-trash notes. The active note's live
   // body is parsed only while it has unsaved edits; clean notes use the
@@ -1494,6 +1526,18 @@ export function Sidebar(): JSX.Element {
     });
     return next;
   }, [activeBodyTagSnapshot, notes]);
+
+  // Nested-tag tree (#439): group the flat `[tag, count]` list on `/` and flatten
+  // back to the rows visible given the collapsed set. Falls back to nothing when
+  // the flat-list preference is on; the render below picks which to show.
+  const collapsedTagSet = useMemo(
+    () => new Set(collapsedTagNodes),
+    [collapsedTagNodes],
+  );
+  const visibleTagRows = useMemo(
+    () => (nestedTags ? flattenTagTree(buildTagTree(tags), collapsedTagSet) : []),
+    [nestedTags, tags, collapsedTagSet],
+  );
 
   const bulkSelectionMenuItems = useMemo<ContextMenuItem[] | null>(() => {
     if (selectedSidebarCount <= 1) return null;
@@ -1576,6 +1620,8 @@ export function Sidebar(): JSX.Element {
         label: `Move ${archivableNotes.length} note${archivableNotes.length === 1 ? "" : "s"} to ${folderLabels.archive}`,
         icon: <ArchiveIcon />,
         onSelect: async () => {
+          const paths = archivableNotes.map((note) => note.path);
+          if (!(await useStore.getState().confirmArchiveNotes(paths))) return;
           for (const note of archivableNotes) {
             await window.zen.archiveNote(note.path);
           }
@@ -1933,6 +1979,27 @@ export function Sidebar(): JSX.Element {
       },
     });
 
+    // Vault-level Tasks exclusion (#458). The list stores on-disk relative
+    // paths, so a root-primary inbox's top level resolves to "": no valid
+    // entry to toggle, hide the item there.
+    const tasksExcludeRelDir = vaultRelativeFolderPath(
+      folder,
+      subpath,
+      vaultSettings,
+    );
+    if (tasksExcludeRelDir) {
+      const tasksExcluded = (
+        vaultSettings.tasks?.excludedFolders ?? []
+      ).includes(tasksExcludeRelDir);
+      items.push({ kind: "separator" });
+      items.push({
+        label: tasksExcluded ? "Include in Tasks" : "Exclude from Tasks",
+        onSelect: async () => {
+          await toggleTasksExcludedFolder(tasksExcludeRelDir);
+        },
+      });
+    }
+
     if (!isTop) {
       items.push({ kind: "separator" });
       const leafName = subpath.split("/").slice(-1)[0];
@@ -2017,6 +2084,7 @@ export function Sidebar(): JSX.Element {
     openIconPicker,
     openColorPicker,
     toggleFavorite,
+    toggleTasksExcludedFolder,
     bulkSelectionMenuItems,
     selectedSidebarKeys,
   ]);
@@ -2205,6 +2273,7 @@ export function Sidebar(): JSX.Element {
         label: folderLabels.archive,
         icon: <ArchiveIcon />,
         onSelect: async () => {
+          if (!(await useStore.getState().confirmArchiveNotes([n.path]))) return;
           await window.zen.archiveNote(n.path);
           await refreshNotes();
           if (selectedPath === n.path) await selectNote(null);
@@ -2787,6 +2856,10 @@ export function Sidebar(): JSX.Element {
     <aside
       className={`glass-sidebar relative flex shrink-0 flex-col pt-3${isSidebarFocused ? " panel-focused" : ""}`}
       style={{ width: sidebarWidth }}
+      // Programmatic focus target for focusSidebarPanel (the Focus Sidebar
+      // command); -1 keeps it out of the tab order.
+      data-zen-sidebar
+      tabIndex={-1}
       onMouseDownCapture={(e) => {
         syncSidebarCursorFromTarget(e.target);
         setFocusedPanel("sidebar");
@@ -2861,8 +2934,10 @@ export function Sidebar(): JSX.Element {
         </div>
       </div>
 
-      {/* Search + toolbar on one row */}
-      <div className="flex items-center gap-1 px-3">
+      {/* Search + toolbar on one row. flex-wrap: on a narrow sidebar the
+       *  icon strip drops to its own line under the search field instead of
+       *  overflowing through the border (#539). */}
+      <div className="flex flex-wrap items-center gap-1 px-3">
         <button
           onClick={() => setSearchOpen(true)}
           className="group flex h-7 flex-1 min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm text-ink-700 transition-colors hover:bg-paper-200/70 hover:text-ink-900"
@@ -2993,7 +3068,7 @@ export function Sidebar(): JSX.Element {
       {/* Main scrollable tree area */}
       <div
         ref={sidebarScrollRef}
-        className="mt-3 min-h-0 flex-1 overflow-y-auto px-3"
+        className="zn-sidebar-scroll mt-3 min-h-0 flex-1 overflow-y-auto px-3"
         style={{ scrollbarGutter: "stable" }}
         onClick={(e) => {
           if (e.target === e.currentTarget) setFocusedPanel("editor");
@@ -3022,16 +3097,27 @@ export function Sidebar(): JSX.Element {
                   const idx = idxCounter.current.value++;
                   const vimHighlight = vimCursor === idx;
                   if (item.kind === "note") {
+                    // A favorited note keeps the icon and color it carries in
+                    // the tree; the row used to hardcode the document glyph,
+                    // so the same note looked different two sections apart.
+                    const customIconId = vaultSettings.folderIcons[item.path];
                     return (
                       <FavoriteRow
                         key={item.key}
                         label={item.title || "Untitled"}
                         icon={
-                          item.isDrawing ? (
+                          customIconId ? (
+                            iconOptionById(customIconId).icon
+                          ) : item.isDrawing ? (
                             <ExcalidrawIcon width={13} height={13} />
                           ) : (
                             <DocumentIcon width={13} height={13} />
                           )
+                        }
+                        colorClass={
+                          colorGlyphClassById(
+                            vaultSettings.folderColors[item.path],
+                          ) ?? undefined
                         }
                         active={selectedPath === item.path}
                         onClick={() => {
@@ -3062,6 +3148,13 @@ export function Sidebar(): JSX.Element {
                           item.subpath,
                           vaultSettings.folderIcons,
                         ).icon
+                      }
+                      colorClass={
+                        resolveFolderColorGlyphClass(
+                          item.folder,
+                          item.subpath,
+                          vaultSettings.folderColors,
+                        ) ?? undefined
                       }
                       active={isFolderActive(item.folder, item.subpath)}
                       onClick={() => {
@@ -3099,6 +3192,22 @@ export function Sidebar(): JSX.Element {
             vimHighlight={vimCursor === idxCounter.current.value - 1}
             sidebarFocused={isSidebarFocused}
           />
+
+          {/* Hidden when the feature is off. Because the row is skipped before
+              its props are evaluated, idxCounter never advances for it and the
+              data-sidebar-idx sequence stays contiguous for Vim navigation. */}
+          {workflowsEnabled && (
+            <TaskSidebarRow
+              active={workflowsViewActive}
+              onClick={() => void openWorkflowsView()}
+              label="Workflows"
+              icon={<WorkflowIcon width={12} height={12} strokeWidth={2.15} />}
+              sidebarType="workflows"
+              sidebarIdx={idxCounter.current.value++}
+              vimHighlight={vimCursor === idxCounter.current.value - 1}
+              sidebarFocused={isSidebarFocused}
+            />
+          )}
 
           <FolderTreeRoot
             label={folderLabels.quick}
@@ -3264,58 +3373,173 @@ export function Sidebar(): JSX.Element {
                   {tags.length}
                 </span>
               </button>
-              {!tagsCollapsed && (
-                <div className="flex flex-wrap gap-1.5 px-1">
-                  {tags.map(([tag, count]) => {
-                    // Tag chips feed into a single vault-wide Tags tab. If the
-                    // tab is already open, clicking a chip toggles that tag in
-                    // the selection (narrower / wider result set). Otherwise
-                    // opening one starts the selection with just this tag.
-                    const active = tagsViewActive && selectedTags.includes(tag);
-                    const tagIdx = idxCounter.current.value++;
-                    const isVimHighlight = vimCursor === tagIdx;
-                    return (
-                      <button
-                        key={tag}
-                        onClick={() => {
-                          void openTagView(tag);
-                        }}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setTagMenu({ x: e.clientX, y: e.clientY, tag });
-                        }}
-                        className={[
-                          "rounded-full px-2.5 py-1 text-xs transition-colors",
-                          active
-                            ? isVimHighlight
-                              ? "vim-cursor-on-active bg-paper-300/70 text-ink-900 font-medium"
-                              : isSidebarFocused
-                                ? "text-accent"
-                                : "bg-paper-300/70 text-ink-900 font-medium"
-                            : isVimHighlight
-                              ? "vim-cursor"
-                              : "bg-paper-200 text-ink-800 hover:bg-paper-300",
-                        ].join(" ")}
-                        data-sidebar-idx={tagIdx}
-                        data-sidebar-type="tag"
-                        data-sidebar-tag={tag}
-                      >
-                        #{tag}
-                        <span
-                          className={[
-                            "ml-1 text-2xs",
-                            active && !isSidebarFocused
-                              ? "text-ink-700"
-                              : "text-ink-500",
-                          ].join(" ")}
+              {!tagsCollapsed &&
+                (nestedTags ? (
+                  // #439: hierarchical `/`-separated tags as a collapsible tree.
+                  // A leaf (or a real tag) selects on click; a pure grouping node
+                  // (no note carries it exactly) toggles instead. The disclosure
+                  // triangle always expands/collapses.
+                  <div className="flex flex-col gap-1.5 px-1 pt-0.5">
+                    {visibleTagRows.map((node) => {
+                      const hasChildren = node.children.length > 0;
+                      const collapsed = collapsedTagSet.has(node.path);
+                      const active =
+                        tagsViewActive && selectedTags.includes(node.path);
+                      const tagIdx = idxCounter.current.value++;
+                      const isVimHighlight = vimCursor === tagIdx;
+                      return (
+                        <div
+                          key={node.path}
+                          data-sidebar-idx={tagIdx}
+                          data-sidebar-type="tag"
+                          data-sidebar-tag={node.path}
+                          data-sidebar-tag-expandable={
+                            hasChildren ? "1" : undefined
+                          }
+                          data-sidebar-tag-real={node.isTag ? "1" : undefined}
+                          style={{ paddingLeft: `${node.depth * 14}px` }}
+                          className="flex items-center gap-1"
                         >
-                          {count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                          {hasChildren ? (
+                            <button
+                              type="button"
+                              title={collapsed ? "Expand" : "Collapse"}
+                              aria-label={collapsed ? "Expand" : "Collapse"}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleCollapseTagNode(node.path);
+                              }}
+                              className="flex h-6 w-4 shrink-0 items-center justify-center text-ink-500 outline-none transition-colors hover:text-ink-800 focus:outline-none focus-visible:outline-none"
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                width="9"
+                                height="9"
+                                aria-hidden="true"
+                                className={collapsed ? "" : "rotate-90"}
+                              >
+                                <path
+                                  d="M9 6l6 6-6 6"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2.5"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </button>
+                          ) : (
+                            <span className="h-6 w-4 shrink-0" />
+                          )}
+                          {/* A rounded chip keeps each tag reading as a tag (not a
+                              file row); real tags are filled, grouping nodes are a
+                              fainter chip. (#439) */}
+                          <button
+                            type="button"
+                            title={node.isTag ? `#${node.path}` : node.path}
+                            onClick={() => {
+                              if (node.isTag) void openTagView(node.path);
+                              else toggleCollapseTagNode(node.path);
+                            }}
+                            onContextMenu={
+                              node.isTag
+                                ? (e) => {
+                                    e.preventDefault();
+                                    setTagMenu({
+                                      x: e.clientX,
+                                      y: e.clientY,
+                                      tag: node.path,
+                                    });
+                                  }
+                                : undefined
+                            }
+                            className={[
+                              "inline-flex min-w-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs outline-none transition-colors focus:outline-none focus-visible:outline-none",
+                              active
+                                ? isVimHighlight
+                                  ? "vim-cursor-on-active bg-paper-300/70 text-ink-900 font-medium"
+                                  : isSidebarFocused
+                                    ? "bg-accent/15 text-accent font-medium"
+                                    : "bg-paper-300/70 text-ink-900 font-medium"
+                                : isVimHighlight
+                                  ? "vim-cursor"
+                                  : node.isTag
+                                    ? "bg-paper-200 text-ink-800 hover:bg-paper-300"
+                                    : "bg-paper-200/40 text-ink-500 hover:bg-paper-200/80",
+                            ].join(" ")}
+                          >
+                            <span className="truncate">
+                              {node.isTag ? "#" : ""}
+                              {node.name}
+                            </span>
+                            <span
+                              className={[
+                                "text-2xs",
+                                active && !isSidebarFocused
+                                  ? "text-ink-700"
+                                  : "text-ink-500",
+                              ].join(" ")}
+                            >
+                              {node.isTag ? node.count : node.subtreeCount}
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5 px-1">
+                    {tags.map(([tag, count]) => {
+                      // Tag chips feed into a single vault-wide Tags tab. If the
+                      // tab is already open, clicking a chip toggles that tag in
+                      // the selection (narrower / wider result set). Otherwise
+                      // opening one starts the selection with just this tag.
+                      const active =
+                        tagsViewActive && selectedTags.includes(tag);
+                      const tagIdx = idxCounter.current.value++;
+                      const isVimHighlight = vimCursor === tagIdx;
+                      return (
+                        <button
+                          key={tag}
+                          onClick={() => {
+                            void openTagView(tag);
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setTagMenu({ x: e.clientX, y: e.clientY, tag });
+                          }}
+                          className={[
+                            "rounded-full px-2.5 py-1 text-xs transition-colors",
+                            active
+                              ? isVimHighlight
+                                ? "vim-cursor-on-active bg-paper-300/70 text-ink-900 font-medium"
+                                : isSidebarFocused
+                                  ? "text-accent"
+                                  : "bg-paper-300/70 text-ink-900 font-medium"
+                              : isVimHighlight
+                                ? "vim-cursor"
+                                : "bg-paper-200 text-ink-800 hover:bg-paper-300",
+                          ].join(" ")}
+                          data-sidebar-idx={tagIdx}
+                          data-sidebar-type="tag"
+                          data-sidebar-tag={tag}
+                        >
+                          #{tag}
+                          <span
+                            className={[
+                              "ml-1 text-2xs",
+                              active && !isSidebarFocused
+                                ? "text-ink-700"
+                                : "text-ink-500",
+                            ].join(" ")}
+                          >
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
             </div>
             )}
 
@@ -3369,7 +3593,13 @@ export function Sidebar(): JSX.Element {
       {/* Footer — vault-level utilities. Kept deliberately small so the
        *  main tree area dominates; Help and Settings are also reachable
        *  from the command palette and (for Settings) ⌘,. Trash lives in
-       *  the main tree above and opens its dedicated recovery view. */}
+       *  the main tree above and opens its dedicated recovery view.
+       *
+       *  The three labeled actions need ~306px with the file-count badge and
+       *  ~260px without it, but the sidebar resizes down to 160. Below those
+       *  widths the row degrades instead of painting labels over each other
+       *  (#539): first the count folds into the Files tooltip, then the
+       *  labels drop and the icons stand alone. */}
       <div
         className="zn-sidebar-footer-safe mt-2 grid h-16 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 px-3"
         style={{ borderTop: "1px solid var(--glass-stroke)" }}
@@ -3378,7 +3608,9 @@ export function Sidebar(): JSX.Element {
           <SidebarFooterAction
             icon={<FolderGlyphIcon />}
             label="Files"
-            count={assetFiles.length}
+            title={footerShowsCount ? undefined : `Files · ${assetFiles.length}`}
+            count={footerShowsCount ? assetFiles.length : undefined}
+            iconOnly={!footerShowsLabels}
             onClick={() => void revealAssetsDir()}
             sidebarIdx={idxCounter.current.value++}
             vimHighlight={vimCursor === idxCounter.current.value - 1}
@@ -3390,6 +3622,7 @@ export function Sidebar(): JSX.Element {
         <SidebarFooterAction
           icon={<DocumentIcon />}
           label="Help"
+          iconOnly={!footerShowsLabels}
           active={helpViewActive}
           onClick={() => void openHelpView()}
           sidebarIdx={idxCounter.current.value++}
@@ -3402,6 +3635,7 @@ export function Sidebar(): JSX.Element {
           label="Settings"
           title={appUpdateSettingsTitle}
           badgeLabel={appUpdateBadge ?? undefined}
+          iconOnly={!footerShowsLabels}
           onClick={() => setSettingsOpen(true)}
           sidebarIdx={idxCounter.current.value++}
           vimHighlight={vimCursor === idxCounter.current.value - 1}
@@ -5224,6 +5458,9 @@ function TreeRow({
 
 // Top-level utility row. These align their icon center to the folder chevron
 // rail, but do not reserve a full fake chevron slot.
+// Shared by the Tasks and Workflows rows under "Quick access". Both are
+// single-click entries to a virtual tab rather than folders, so they share one
+// component; `icon` and `sidebarType` are the only things that differ.
 function TaskSidebarRow({
   active,
   onClick,
@@ -5231,6 +5468,8 @@ function TaskSidebarRow({
   sidebarIdx,
   vimHighlight,
   sidebarFocused = false,
+  icon,
+  sidebarType = "tasks",
 }: {
   active: boolean;
   onClick: () => void;
@@ -5238,6 +5477,8 @@ function TaskSidebarRow({
   sidebarIdx?: number;
   vimHighlight?: boolean;
   sidebarFocused?: boolean;
+  icon?: JSX.Element;
+  sidebarType?: string;
 }): JSX.Element {
   const strongActive = active && (!sidebarFocused || !!vimHighlight);
   return (
@@ -5267,12 +5508,12 @@ function TaskSidebarRow({
       {...(sidebarIdx != null
         ? {
             "data-sidebar-idx": sidebarIdx,
-            "data-sidebar-type": "tasks",
+            "data-sidebar-type": sidebarType,
           }
         : {})}
     >
       <SidebarGlyph active={strongActive} rowActive={active}>
-        <CheckSquareIcon width={12} height={12} strokeWidth={2.15} />
+        {icon ?? <CheckSquareIcon width={12} height={12} strokeWidth={2.15} />}
       </SidebarGlyph>
       <span className="flex-1 truncate">{label}</span>
     </div>
@@ -5285,6 +5526,7 @@ function TaskSidebarRow({
 function FavoriteRow({
   label,
   icon,
+  colorClass,
   active,
   onClick,
   onContextMenu,
@@ -5295,6 +5537,8 @@ function FavoriteRow({
 }: {
   label: string;
   icon: JSX.Element;
+  /** Custom glyph/label tint (folder color), mirroring the tree rows. */
+  colorClass?: string;
   active: boolean;
   onClick: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -5332,10 +5576,12 @@ function FavoriteRow({
       {...(sidebarIdx != null ? { "data-sidebar-idx": sidebarIdx } : {})}
       {...dataAttrs}
     >
-      <SidebarGlyph active={strongActive} rowActive={active}>
+      <SidebarGlyph active={strongActive} rowActive={active} colorClass={colorClass}>
         {icon}
       </SidebarGlyph>
-      <span className="flex-1 truncate">{label}</span>
+      <span className={["flex-1 truncate", colorClass].filter(Boolean).join(" ")}>
+        {label}
+      </span>
       {sidebarFocused && vimHighlight && (
         <RowKeyHint active={active} keyLabel="m" compact />
       )}
@@ -5508,6 +5754,7 @@ function SidebarFooterAction({
   count,
   badgeLabel,
   active,
+  iconOnly,
   onClick,
   sidebarIdx,
   vimHighlight,
@@ -5520,6 +5767,9 @@ function SidebarFooterAction({
   count?: number;
   badgeLabel?: string;
   active?: boolean;
+  /** Narrow-sidebar mode (#539): the label is dropped and the tooltip and
+   *  aria-label carry it instead, so the row never outgrows the sidebar. */
+  iconOnly?: boolean;
   onClick: () => void;
   sidebarIdx?: number;
   vimHighlight?: boolean;
@@ -5535,7 +5785,7 @@ function SidebarFooterAction({
       title={resolvedTitle}
       aria-label={resolvedTitle}
       className={[
-        "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium leading-none transition-colors whitespace-nowrap",
+        "inline-flex h-8 min-w-0 items-center gap-1.5 overflow-hidden rounded-lg px-2.5 text-xs font-medium leading-none transition-colors whitespace-nowrap",
         active
           ? vimHighlight
             ? "vim-cursor-on-active bg-paper-300/70 text-ink-900 font-medium"
@@ -5558,11 +5808,11 @@ function SidebarFooterAction({
       >
         {icon}
       </span>
-      <span className="truncate">{label}</span>
-      {typeof count === "number" && (
+      {!iconOnly && <span className="truncate">{label}</span>}
+      {!iconOnly && typeof count === "number" && (
         <span
           className={[
-            "rounded-full px-1.5 py-0.5 text-2xs",
+            "shrink-0 rounded-full px-1.5 py-0.5 text-2xs",
             strongActive
               ? "bg-ink-900/10 text-ink-700"
               : "bg-paper-200/80 text-ink-500",
@@ -5574,7 +5824,7 @@ function SidebarFooterAction({
       {badgeLabel && (
         <span
           className={[
-            "rounded-full px-1.5 py-0.5 text-2xs font-semibold",
+            "shrink-0 rounded-full px-1.5 py-0.5 text-2xs font-semibold",
             strongActive
               ? "bg-accent/20 text-accent"
               : "bg-accent/12 text-accent",

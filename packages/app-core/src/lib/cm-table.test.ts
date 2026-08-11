@@ -5,13 +5,17 @@ import { forceParsing } from '@codemirror/language'
 import { history } from '@codemirror/commands'
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Text } from '@codemirror/state'
 import {
+  renderInlineCell,
+  tableBlockAt,
   tablePlugin,
   nextWordStart,
   prevWordStart,
   nextWordEnd,
-  textObjectRange
+  textObjectRange,
+  findChar
 } from './cm-table'
 import { closeTableContextMenu } from './cm-table-menu'
 import { useStore } from '../store'
@@ -261,6 +265,29 @@ describe('vim word motions (cell cursor)', () => {
   })
 })
 
+describe('vim find-char (f / t / F / T, cell cursor)', () => {
+  const t = 'Engineer' // E n g i n e e r  (indices 0..7)
+  it('f finds the next occurrence forward', () => {
+    expect(findChar(t, 0, 'n', 1, false)).toBe(1)
+    expect(findChar(t, 1, 'n', 1, false)).toBe(4) // skips the current char
+    expect(findChar(t, 0, 'r', 1, false)).toBe(7)
+  })
+  it('t stops one char before the target (forward)', () => {
+    expect(findChar(t, 0, 'e', 1, true)).toBe(4) // 'e' at 5 → 4
+  })
+  it('F finds the next occurrence backward', () => {
+    expect(findChar(t, 7, 'n', -1, false)).toBe(4)
+    expect(findChar(t, 7, 'E', -1, false)).toBe(0)
+  })
+  it('T stops one char after the target (backward)', () => {
+    expect(findChar(t, 7, 'g', -1, true)).toBe(3) // 'g' at 2 → 3
+  })
+  it('returns null when the char is not found', () => {
+    expect(findChar(t, 0, 'z', 1, false)).toBeNull()
+    expect(findChar(t, 7, 'z', -1, false)).toBeNull()
+  })
+})
+
 describe('text objects (vi / va, di / ca)', () => {
   it('iw / aw select the word (a includes trailing space)', () => {
     const t = 'foo bar baz'
@@ -342,5 +369,144 @@ describe('tablePlugin — column widths (#294)', () => {
     const markers = view.state.doc.toString().match(/zen:cols/g) ?? []
     expect(markers.length).toBe(1)
     view.destroy()
+  })
+})
+
+describe('table cell link following (#445)', () => {
+  const saved = {
+    notes: useStore.getState().notes,
+    selectNote: useStore.getState().selectNote,
+    selectedPath: useStore.getState().selectedPath,
+    vimMode: useStore.getState().vimMode
+  }
+  afterEach(() => {
+    useStore.setState(saved)
+    vi.restoreAllMocks()
+  })
+
+  function setup(vimMode: boolean): ReturnType<typeof vi.fn> {
+    const selectNote = vi.fn(async () => {})
+    useStore.setState({
+      vimMode,
+      selectedPath: 'Doc.md',
+      // Minimal note refs the resolvers need (title + folder + path).
+      notes: [{ path: 'Target-Note.md', title: 'Target-Note', folder: 'inbox' }],
+      selectNote
+    } as never)
+    return selectNote
+  }
+
+  const WIKILINK_DOC = '| A | B |\n| --- | --- |\n| x | [[Target-Note]] |'
+  const MDLINK_DOC = '| A | B |\n| --- | --- |\n| x | [go](Target-Note.md) |'
+
+  it('follows a [[wikilink]] in a cell on plain click instead of revealing raw source', () => {
+    const selectNote = setup(false)
+    const view = mount(WIKILINK_DOC)
+    const anchor = view.dom.querySelector<HTMLAnchorElement>('.cm-table-cell a.wikilink')
+    expect(anchor).toBeTruthy()
+    expect(anchor?.dataset.wikilink).toBe('Target-Note')
+    anchor?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+    expect(selectNote).toHaveBeenCalledWith('Target-Note.md')
+    view.destroy()
+  })
+
+  it('follows a [text](Note.md) link in a cell on Cmd/Ctrl-click', () => {
+    const selectNote = setup(false)
+    const view = mount(MDLINK_DOC)
+    const anchor = view.dom.querySelector<HTMLAnchorElement>('.cm-table-cell a[href="Target-Note.md"]')
+    expect(anchor).toBeTruthy()
+    anchor?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, metaKey: true }))
+    expect(selectNote).toHaveBeenCalledWith('Target-Note.md')
+    view.destroy()
+  })
+
+  it('follows the link under the cursor on `gd` in a cell (Vim)', () => {
+    const selectNote = setup(true)
+    const view = mount(WIKILINK_DOC)
+    const cell = [...view.dom.querySelectorAll<HTMLElement>('.cm-table-cell')].find(
+      (c) => c.dataset.raw === '[[Target-Note]]'
+    )
+    expect(cell).toBeTruthy()
+    cell?.focus() // Vim: enter NORMAL mode in the cell (cursor at offset 0)
+    cell?.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', bubbles: true }))
+    cell?.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true }))
+    expect(selectNote).toHaveBeenCalledWith('Target-Note.md')
+    view.destroy()
+  })
+})
+
+describe('tableBlockAt — the fallback when the parse has not caught up (#485)', () => {
+  const doc = (text: string) => Text.of(text.split('\n'))
+
+  it('finds the table around a position, header row to last row', () => {
+    const text = 'intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nafter'
+    const t = doc(text)
+    const inside = text.indexOf('| 1 | 2 |') + 2
+    const range = tableBlockAt(t, inside)
+    expect(range).not.toBeNull()
+    expect(text.slice(range!.from, range!.to)).toBe('| A | B |\n| --- | --- |\n| 1 | 2 |')
+  })
+
+  it('takes the trailing zen:cols marker with it, like the tree path does', () => {
+    const text = '| A | B |\n| --- | --- |\n| 1 | 2 |\n<!-- zen:cols=273,227 -->\ntail'
+    const t = doc(text)
+    const range = tableBlockAt(t, 3)
+    expect(text.slice(range!.from, range!.to)).toContain('zen:cols=273,227')
+  })
+
+  it('refuses a lone pipe line — that is prose, not a table', () => {
+    const t = doc('a | b is not a table\n| stray |\nplain')
+    expect(tableBlockAt(t, t.line(2).from + 2)).toBeNull()
+  })
+
+  it('returns null off the table', () => {
+    const t = doc('prose here\n\n| A |\n| --- |')
+    expect(tableBlockAt(t, 2)).toBeNull()
+  })
+
+  it('handles a table at the very start and end of the document', () => {
+    const text = '| A | B |\n| --- | --- |'
+    const t = doc(text)
+    const range = tableBlockAt(t, 0)
+    expect(range).toEqual({ from: 0, to: text.length })
+  })
+})
+
+describe('renderInlineCell', () => {
+  // A cell is inline content, so a leading block marker is just a character.
+  // These all rendered as empty blocks before, losing the text outright. (#559)
+  it('keeps a cell that is only a list marker visible', () => {
+    expect(renderInlineCell('-')).toBe('-')
+    expect(renderInlineCell('+')).toBe('+')
+    expect(renderInlineCell('*')).toBe('*')
+  })
+
+  it('keeps the other block markers literal too', () => {
+    expect(renderInlineCell('#')).toBe('#')
+    expect(renderInlineCell('1.')).toBe('1.')
+    expect(renderInlineCell('---')).toBe('---')
+    expect(renderInlineCell('# H')).toBe('# H')
+    expect(renderInlineCell('- x')).toBe('- x')
+    expect(renderInlineCell('> q')).toBe('&gt; q')
+  })
+
+  it('still renders inline markup', () => {
+    expect(renderInlineCell('**b**')).toBe('<strong>b</strong>')
+    expect(renderInlineCell('`c`')).toBe('<code>c</code>')
+    expect(renderInlineCell('[[note]]')).toContain('class="wikilink"')
+    expect(renderInlineCell('#tag')).toContain('class="hashtag"')
+  })
+
+  it('renders a literal pipe rather than splitting the synthetic row', () => {
+    expect(renderInlineCell('a | b')).toBe('a | b')
+  })
+
+  it('renders nothing for an empty cell', () => {
+    expect(renderInlineCell('')).toBe('')
+    expect(renderInlineCell('   ')).toBe('')
+  })
+
+  it('flattens a pasted newline instead of breaking out of the cell', () => {
+    expect(renderInlineCell('a\nb')).toBe('a b')
   })
 })

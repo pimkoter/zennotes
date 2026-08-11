@@ -20,6 +20,7 @@ import {
   type PortablePrefKey
 } from '@shared/app-config'
 import {
+  catalogDefaultBinding,
   KEYMAP_CATALOG,
   KEYMAP_GROUP_ORDER,
   KEYMAP_GROUP_LABELS
@@ -92,15 +93,40 @@ const SCALAR_FIELDS: Partial<Record<PortablePrefKey, ScalarFieldMap>> = {
     tomlKey: 'live_preview',
     comment: 'hide markdown syntax on inactive lines'
   },
+  showHeadingLevelLabels: {
+    section: 'editor',
+    tomlKey: 'show_heading_level_labels',
+    comment: 'show H1 through H6 badges before headings'
+  },
   renderTablesInLivePreview: {
     section: 'editor',
     tomlKey: 'render_tables',
     comment: 'render tables as widgets in live preview; off keeps them as plain text'
   },
+  syncTitleHeadingOnRename: {
+    section: 'editor',
+    tomlKey: 'sync_title_heading_on_rename',
+    comment: "renaming a note rewrites its leading '# heading' to match"
+  },
   markdownSnippets: {
     section: 'editor',
     tomlKey: 'markdown_snippets',
     comment: 'auto-close markdown delimiters while typing'
+  },
+  textReplacementsEnabled: {
+    section: 'editor',
+    tomlKey: 'text_replacements_enabled',
+    comment: 'expand configured text triggers while typing'
+  },
+  autoPairs: {
+    section: 'editor',
+    tomlKey: 'auto_pairs',
+    comment: 'auto-insert matching [] () and {} while typing'
+  },
+  autoPairQuotesInProse: {
+    section: 'editor',
+    tomlKey: 'auto_pair_quotes_in_prose',
+    comment: 'also auto-insert matching quotes outside Markdown code'
   },
   hideBuiltinTemplates: {
     section: 'editor',
@@ -119,6 +145,16 @@ const SCALAR_FIELDS: Partial<Record<PortablePrefKey, ScalarFieldMap>> = {
     comment: 'editor + preview font size (px)'
   },
   editorLineHeight: { section: 'editor', tomlKey: 'line_height', comment: 'line-height multiplier' },
+  editorTabSize: {
+    section: 'editor',
+    tomlKey: 'tab_size',
+    comment: 'tab width in columns, from 1 through 8'
+  },
+  listIndentGuides: {
+    section: 'editor',
+    tomlKey: 'list_indent_guides',
+    comment: 'vertical guide lines at each nested list level'
+  },
   editorScrollOff: {
     section: 'editor',
     tomlKey: 'scroll_off',
@@ -143,6 +179,26 @@ const SCALAR_FIELDS: Partial<Record<PortablePrefKey, ScalarFieldMap>> = {
     section: 'editor',
     tomlKey: 'completed_task_style',
     comment: 'none | strikethrough | gray | gray-strikethrough — style checked-task text'
+  },
+  mathRenderer: {
+    section: 'editor',
+    tomlKey: 'math_renderer',
+    comment: 'katex | typst: typesetter for $…$ / $$…$$ math'
+  },
+  typstTagPreambles: {
+    section: 'editor',
+    tomlKey: 'typst_tag_preambles',
+    comment: 'true | false — prepend Typst definitions from notes in a `typst` folder, chosen by a note\'s tags'
+  },
+  looseMathDelimiters: {
+    section: 'editor',
+    tomlKey: 'loose_math_delimiters',
+    comment: 'render $$…$$ display math even with text before/after the fences'
+  },
+  defaultPaneMode: {
+    section: 'editor',
+    tomlKey: 'default_view_mode',
+    comment: 'edit | split | preview — the mode a note opens in before it has a remembered one'
   },
   lineNumberMode: {
     section: 'editor',
@@ -220,6 +276,17 @@ const SCALAR_FIELDS: Partial<Record<PortablePrefKey, ScalarFieldMap>> = {
     comment: 'code / monospace font; empty = system default'
   },
   // view
+  workflowsEnabled: {
+    section: 'view',
+    tomlKey: 'workflows_enabled',
+    comment:
+      'opt in to the Workflows view, its sidebar row, command, and leader shortcut (off by default)'
+  },
+  assetSortOrder: {
+    section: 'view',
+    tomlKey: 'asset_sort_order',
+    comment: 'Assets view sort: name | used | type | size | modified, each -asc or -desc'
+  },
   noteSortOrder: {
     section: 'view',
     tomlKey: 'note_sort_order',
@@ -227,6 +294,11 @@ const SCALAR_FIELDS: Partial<Record<PortablePrefKey, ScalarFieldMap>> = {
       'none | manual | updated-desc | updated-asc | created-desc | created-asc | name-asc | name-desc'
   },
   groupByKind: { section: 'view', tomlKey: 'group_by_kind', comment: 'group notes by kind in the list' },
+  nestedTags: {
+    section: 'view',
+    tomlKey: 'nested_tags',
+    comment: 'show /-separated tags as a collapsible tree (sidebar + Tags view)'
+  },
   viewSettingsScope: {
     section: 'view',
     tomlKey: 'view_settings_scope',
@@ -263,6 +335,11 @@ const SCALAR_FIELDS: Partial<Record<PortablePrefKey, ScalarFieldMap>> = {
     comment: 'show ISO week numbers in the calendar'
   },
   tasksViewMode: { section: 'view', tomlKey: 'tasks_view_mode', comment: 'list | calendar | kanban' },
+  showArchivedTasks: {
+    section: 'view',
+    tomlKey: 'show_archived_tasks',
+    comment: 'keep tasks from archived notes in the Tasks views'
+  },
   kanbanGroupBy: {
     section: 'view',
     tomlKey: 'kanban_group_by',
@@ -285,6 +362,11 @@ const LIST_FIELDS: Partial<Record<PortablePrefKey, ListFieldMap>> = {
     section: 'view',
     tomlKey: 'kanban_statuses',
     comment: 'custom-status Kanban columns, in order — e.g. ["backlog", "in_progress", "review", "done"]'
+  },
+  hiddenWorkflowPresets: {
+    section: 'view',
+    tomlKey: 'hidden_workflow_presets',
+    comment: 'built-in workflow recipes hidden from the gallery, by id — e.g. ["reading-log"]'
   }
 }
 
@@ -327,6 +409,11 @@ const MAP_TABLE_FIELDS: Partial<Record<PortablePrefKey, MapTableField>> = {
     table: 'tweaks',
     comment: ['Visual color tweaks from Settings → Appearance (token slug = color).'],
     example: '"accent" = "#ff3b30"'
+  },
+  textReplacements: {
+    table: 'text_replacements',
+    comment: ['Text replacements expanded while typing, keyed by trigger.'],
+    example: '"->" = "→"'
   }
 }
 
@@ -504,7 +591,9 @@ function keymapSectionLines(rawOverrides: unknown): string[] {
     if (entries.length === 0) continue
     lines.push(`# ${KEYMAP_GROUP_LABELS[group] ?? group}`)
     for (const entry of entries) {
-      lines.push(`# ${tomlKey(entry.id)} = ${tomlValue(entry.defaultBinding)}  # ${entry.title}`)
+      lines.push(
+        `# ${tomlKey(entry.id)} = ${tomlValue(catalogDefaultBinding(entry, process.platform === 'darwin'))}  # ${entry.title}`
+      )
     }
   }
 

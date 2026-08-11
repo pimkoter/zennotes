@@ -26,6 +26,14 @@ import type {
   WriteTemplateInput
 } from '@zennotes/bridge-contract/templates'
 import type {
+  ApplyWorkflowInput,
+  WorkflowFile,
+  WorkflowRunReceipt,
+  WorkflowRunSummary,
+  WorkflowUndoResult,
+  WriteWorkflowInput
+} from '@zennotes/bridge-contract/workflows'
+import type {
   AppUpdateState,
   AssetMeta,
   CliInstallStatus,
@@ -34,6 +42,7 @@ import type {
   ExternalFileContent,
   FolderEntry,
   ImportedAsset,
+  LinkMetadata,
   LocalVaultEntry,
   MoveExternalFileResult,
   NoteComment,
@@ -59,33 +68,20 @@ import type {
   VaultTextSearchToolPaths
 } from '@shared/ipc'
 import type { VaultTask } from '@shared/tasks'
-import {
-  csvPathForFormDir,
-  databaseSchemaPathFor,
-  formDirFromCsvPath,
-  formTitleFromCsvPath,
-  FORM_DIR_SUFFIX,
-  isFormDirName,
-  type DatabaseDoc,
-  type DatabaseSidecar,
-  type DatabaseSummary,
-  type DbField,
-  type DbRow,
-  type DbView
-} from '@shared/databases'
-import {
-  buildDefaultViews,
-  inferFields,
-  parseCsv,
-  parseRows,
-  serializeRows
-} from '@shared/database-csv'
+import { createDatabaseOps, type DatabaseVaultLayout } from '@shared/database-ops'
+import { isUnknownRouteResponse, parseServerErrorBody } from '@shared/server-error-shape'
+import { pastedImageFilename } from '@shared/pasted-image'
+import { createAbsenceAwareReader } from '@shared/remote-absence'
 import type {
   McpClientId,
   McpClientStatus,
   McpInstructionsPayload,
   McpServerRuntime
 } from '@shared/mcp-clients'
+import type {
+  CustomCodeLanguageInstallInput,
+  CustomCodeLanguageUpdateInput
+} from '@shared/custom-code-languages'
 
 const WEB_CAPABILITIES: ZenCapabilities = {
   supportsUpdater: false,
@@ -94,7 +90,8 @@ const WEB_CAPABILITIES: ZenCapabilities = {
   supportsLocalFilesystemPickers: false,
   supportsRemoteWorkspace: false,
   supportsCliInstall: false,
-  supportsCustomTemplates: false
+  supportsCustomTemplates: false,
+  supportsCustomCodeLanguages: false
 }
 
 const WEB_APP_INFO: ZenAppInfo = {
@@ -137,19 +134,29 @@ type JsonRequestInit = Omit<RequestInit, 'body'> & { body?: JsonBody }
 class HttpRequestError extends Error {
   status: number
   path: string
+  /** The response body verbatim, so callers can read the server's structured
+   *  error shape (see `parseServerErrorBody`) without re-reading the stream. */
+  body: string
 
-  constructor(status: number, path: string, message: string) {
+  constructor(status: number, path: string, message: string, body = '') {
     super(message)
     this.name = 'HttpRequestError'
     this.status = status
     this.path = path
+    this.body = body
   }
 }
 
 function wrapRouteUpgradeError(path: string, err: unknown): never {
+  // A 404 that carries the server's structured body came from the route
+  // itself: the directory is gone, or the path is outside the allowed browse
+  // roots. Only a BARE 404 (the router's own, on a server that has no such
+  // route) means the server predates the vault picker, and claiming otherwise
+  // replaced every real error on the first-run screen with a bogus "upgrade
+  // your server".
   if (
     err instanceof HttpRequestError &&
-    err.status === 404 &&
+    isUnknownRouteResponse(err.status, err.body) &&
     (path.startsWith('/fs/browse') || path === '/vault/select')
   ) {
     throw new Error(
@@ -186,7 +193,8 @@ async function jsonRequest<T>(
     throw new HttpRequestError(
       res.status,
       path,
-      `HTTP ${res.status} ${res.statusText} for ${path}${text ? `: ${text}` : ''}`
+      `HTTP ${res.status} ${res.statusText} for ${path}${text ? `: ${parseServerErrorBody(text)?.message || text}` : ''}`,
+      text
     )
   }
   if (res.status === 204) return undefined as unknown as T
@@ -241,11 +249,20 @@ async function getCurrentVault(): Promise<VaultInfo | null> {
   }
 }
 
+/** Last capabilities this page saw, so the absence reader can consult them
+ *  without a request of its own. Null until the first successful fetch. */
+let lastServerCapabilities: ServerCapabilities | null = null
+
 function getServerCapabilities(): Promise<ServerCapabilities | null> {
-  return jsonRequest<ServerCapabilities>('/capabilities').catch((err) => {
-    if (err instanceof HttpRequestError && err.status === 404) return null
-    throw err
-  })
+  return jsonRequest<ServerCapabilities>('/capabilities')
+    .then((caps) => {
+      lastServerCapabilities = caps
+      return caps
+    })
+    .catch((err) => {
+      if (err instanceof HttpRequestError && err.status === 404) return null
+      throw err
+    })
 }
 
 function getServerSession(): Promise<ServerSessionStatus> {
@@ -275,6 +292,12 @@ function connectRemoteWorkspace(): Promise<{ vault: VaultInfo | null; capabiliti
 
 function disconnectRemoteWorkspace(): Promise<VaultInfo | null> {
   return Promise.reject(new Error('Remote workspace switching is only available in the desktop build'))
+}
+
+// The web app talks to exactly one server (its own); "retry the configured
+// workspace" is simply asking it again for the current vault.
+function retryWorkspaceBoot(): Promise<VaultInfo | null> {
+  return getCurrentVault()
 }
 
 function listRemoteWorkspaceProfiles(): Promise<RemoteWorkspaceProfile[]> {
@@ -499,6 +522,12 @@ function duplicateNote(relPath: string): Promise<NoteMeta> {
   })
 }
 
+// Word export renders in the desktop main process (it reads local image files
+// for embedding); the web app has neither, so the honest answer is a message.
+function exportNoteDocx(_relPath: string): Promise<string | null> {
+  return Promise.reject(new Error('Word export is available in the desktop app.'))
+}
+
 async function exportNotePdf(_relPath: string): Promise<string | null> {
   const url = new URL(window.location.href)
   url.search = ''
@@ -535,6 +564,22 @@ async function revealNoteTarget(_relPath: string): Promise<void> {
 
 async function revealFilePath(_absPath: string): Promise<void> {
   // No OS file manager on the web.
+}
+
+async function openExternalFile(_href: string): Promise<{ ok: boolean; error?: string }> {
+  // The web app has no access to the machine's filesystem or default apps.
+  return { ok: false, error: 'desktop-only' }
+}
+
+async function openAssetExternally(_relPath: string): Promise<{ ok: boolean; error?: string }> {
+  // Same story as openExternalFile: no OS opener in a browser.
+  return { ok: false, error: 'desktop-only' }
+}
+
+async function fetchLinkMetadata(url: string): Promise<LinkMetadata> {
+  // The browser can't fetch arbitrary cross-origin pages (CORS); a bookmark on
+  // web falls back to a bare link card until a server-side proxy is added.
+  return { url, ok: false }
 }
 
 async function revealFolder(_folder: NoteFolder, _subpath: string): Promise<void> {
@@ -616,307 +661,61 @@ function scanTasksForPath(relPath: string): Promise<VaultTask[]> {
   return jsonRequest<VaultTask[]>(`/tasks/for?path=${encodeURIComponent(relPath)}`)
 }
 
-// Databases are desktop-only for now (no server-side CSV endpoints yet).
 // --------------------------------------------------------------------
-// Databases — reuse the shared CSV/schema logic (@shared/database-csv +
-// @shared/databases) over HTTP, mirroring apps/desktop/src/main/databases.ts so
-// the on-disk format is byte-identical to the desktop. Reads/writes use the
-// generic /notes/read|write endpoints (which accept any vault path, including
-// `.base/` internals); the `.base` folder is created/renamed via the folder
-// endpoints. The server now lists `.base` folders so the sidebar renders them.
+// Databases — the shared composition (@shared/database-ops) bound to this
+// bridge's generic endpoints: reads/writes go through /notes/read|write
+// (which accept any vault path, including `.base/` internals) and the
+// `.base` folder is created/renamed via the folder endpoints. The desktop
+// app binds the same composition to its remote-workspace client (#499),
+// so the on-disk format is identical everywhere by construction.
 // --------------------------------------------------------------------
 
-const SCHEMA_SAMPLE_ROWS = 50
-const DB_TITLE_BAD = /[\\/:*?"<>|]/g
+/** Read a vault file's text, or null when the server says it is ABSENT.
+ *
+ *  404 always means absent. Any other status means absent only if this
+ *  server cannot answer 404 for a missing file, which the reader settles by
+ *  asking it once (see remote-absence.ts). That keeps a 2.20+ server's 500
+ *  surfacing as an error, because `openDatabase` reads an absent sidecar as
+ *  "bare CSV, adopt it" and would write an inferred schema over whatever was
+ *  there, while leaving a pre-2.20 server (500 for both) usable at all. */
+const readFileTextOrNull = createAbsenceAwareReader({
+  read: async (relPath) => (await readNote(relPath)).body,
+  statusOf: (err) => (err instanceof HttpRequestError ? err.status : null),
+  serverReportsMissingAsNotFound: () =>
+    lastServerCapabilities?.reportsMissingAsNotFound === true
+})
 
-function dbGenId(): string {
-  return crypto.randomUUID()
-}
-function dbToPosix(p: string): string {
-  return p.replace(/\\/g, '/')
-}
-function joinSub(...parts: string[]): string {
-  return parts
-    .map((p) => p.replace(/^\/+|\/+$/g, ''))
-    .filter(Boolean)
-    .join('/')
-}
-
-/** Title of a database from its data.csv path. */
-function dbTitleFromPath(csvPath: string): string {
-  const posix = dbToPosix(csvPath)
-  if (formDirFromCsvPath(posix)) return formTitleFromCsvPath(posix)
-  const base = posix.split('/').filter(Boolean).pop() ?? csvPath
-  return base.replace(/\.csv$/i, '')
-}
-
-/** Read a vault file's text, or null when missing/unreadable (matches the
- *  desktop's optional-file reads, which treat ENOENT/parse errors as absent). */
-async function readFileTextOrNull(relPath: string): Promise<string | null> {
-  try {
-    return (await readNote(relPath)).body
-  } catch {
-    return null
-  }
-}
-
-/** True if a note has body beyond frontmatter + a single title heading. */
-function dbNoteHasBody(text: string): boolean {
-  let body = text
-  const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(body)
-  if (fm) body = body.slice(fm[0].length)
-  body = body.replace(/^\s*#[^\n]*\r?\n?/, '')
-  return body.trim().length > 0
-}
-
-/** Defensive sidecar parse — mirror of databases.ts normalizeSidecar. */
-function dbNormalizeSidecar(raw: unknown): DatabaseSidecar | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
-  const fields = Array.isArray(obj.fields) ? (obj.fields as DbField[]) : null
-  if (!fields || fields.length === 0) return null
-  if (!fields.every((f) => f && typeof f.id === 'string' && typeof f.name === 'string')) return null
-  const fieldIds = new Set(fields.map((f) => f.id))
-  const idFieldId =
-    typeof obj.idFieldId === 'string' && fieldIds.has(obj.idFieldId) ? obj.idFieldId : fields[0].id
-  let views = Array.isArray(obj.views) ? (obj.views as DbView[]) : []
-  views = views.filter(
-    (v) => v && typeof v.id === 'string' && (v.type === 'table' || v.type === 'board')
-  )
-  if (views.length === 0) views = buildDefaultViews(fields).views
-  const activeViewId =
-    typeof obj.activeViewId === 'string' && views.some((v) => v.id === obj.activeViewId)
-      ? obj.activeViewId
-      : views[0].id
-  const pages =
-    obj.pages && typeof obj.pages === 'object'
-      ? (Object.fromEntries(
-          Object.entries(obj.pages as Record<string, unknown>).filter(
-            ([, v]) => typeof v === 'string'
-          )
-        ) as Record<string, string>)
-      : undefined
-  return { version: 1, idFieldId, fields, views, activeViewId, ...(pages ? { pages } : {}) }
-}
-
-function dbPagesToFull(csvRel: string, pages: Record<string, string>): Record<string, string> {
-  const formDir = formDirFromCsvPath(dbToPosix(csvRel))
-  if (!formDir) return pages
-  const prefix = `${formDir}/`
-  return Object.fromEntries(
-    Object.entries(pages).map(([id, p]) => [id, p.startsWith(prefix) ? p : `${prefix}${p}`])
-  )
-}
-function dbPagesToRelative(csvRel: string, pages: Record<string, string>): Record<string, string> {
-  const formDir = formDirFromCsvPath(dbToPosix(csvRel))
-  if (!formDir) return pages
-  const prefix = `${formDir}/`
-  return Object.fromEntries(
-    Object.entries(pages).map(([id, p]) => [id, p.startsWith(prefix) ? p.slice(prefix.length) : p])
-  )
-}
-
-function dbHydrate(
-  csvPath: string,
-  sidecar: DatabaseSidecar,
-  rows: DbRow[],
-  pageHasContent?: Record<string, boolean>
-): DatabaseDoc {
+/** Errors propagate: answering "defaults" for an unreachable server sends
+ *  every database path composition to a literal `inbox/`, writing sidecars
+ *  where nothing will ever look for them. */
+async function vaultLayout(): Promise<DatabaseVaultLayout> {
+  const settings = await getVaultSettings()
   return {
-    ...sidecar,
-    path: dbToPosix(csvPath),
-    title: dbTitleFromPath(csvPath),
-    rows,
-    ...(pageHasContent ? { pageHasContent } : {})
+    primaryNotesAtRoot: settings.primaryNotesLocation === 'root',
+    systemFolderPaths: settings.systemFolderPaths
   }
 }
 
-async function dbReadSidecar(csvPath: string): Promise<DatabaseSidecar | null> {
-  const schemaPath = databaseSchemaPathFor(dbToPosix(csvPath))
-  if (!schemaPath) return null
-  const raw = await readFileTextOrNull(schemaPath)
-  if (raw === null) return null
-  let sidecar: DatabaseSidecar | null
-  try {
-    sidecar = dbNormalizeSidecar(JSON.parse(raw))
-  } catch {
-    return null
-  }
-  if (sidecar?.pages) sidecar.pages = dbPagesToFull(dbToPosix(csvPath), sidecar.pages)
-  return sidecar
-}
+const dbOps = createDatabaseOps({
+  readFileTextOrNull,
+  writeFile: async (relPath, text) => {
+    await writeNote(relPath, text)
+  },
+  createFolder,
+  renameFolder,
+  listFolders,
+  vaultLayout
+})
 
-async function dbPersistSidecar(csvPath: string, sidecar: DatabaseSidecar): Promise<void> {
-  const schemaPath = databaseSchemaPathFor(dbToPosix(csvPath))
-  if (!schemaPath) throw new Error(`Not a database folder: ${csvPath}`)
-  const onDisk: DatabaseSidecar = sidecar.pages
-    ? { ...sidecar, pages: dbPagesToRelative(dbToPosix(csvPath), sidecar.pages) }
-    : sidecar
-  await writeNote(schemaPath, `${JSON.stringify(onDisk, null, 2)}\n`)
-}
-
-async function dbReadPageFlags(
-  pages?: Record<string, string>
-): Promise<Record<string, boolean> | undefined> {
-  if (!pages || Object.keys(pages).length === 0) return undefined
-  const flags: Record<string, boolean> = {}
-  await Promise.all(
-    Object.entries(pages).map(async ([rowId, notePath]) => {
-      const text = await readFileTextOrNull(notePath)
-      if (text !== null) flags[rowId] = dbNoteHasBody(text)
-    })
-  )
-  return flags
-}
-
-async function primaryNotesAtRoot(): Promise<boolean> {
-  try {
-    return (await getVaultSettings()).primaryNotesLocation === 'root'
-  } catch {
-    return false
-  }
-}
-
-/** Vault-relative directory for a (folder, subpath) — mirrors the server folderRoot. */
-function vaultRelDir(folder: NoteFolder, subpath: string, atRoot: boolean): string {
-  const sub = (subpath ?? '').replace(/^\/+|\/+$/g, '')
-  if (folder === 'inbox') return atRoot ? sub : joinSub('inbox', sub)
-  return joinSub(folder, sub)
-}
-
-/** Split a vault-relative folder path into (folder, subpath) — inverse of vaultRelDir. */
-function splitVaultPath(rel: string, atRoot: boolean): { folder: NoteFolder; subpath: string } {
-  const parts = dbToPosix(rel).split('/').filter(Boolean)
-  const top = parts[0]
-  if (top === 'quick' || top === 'archive' || top === 'trash') {
-    return { folder: top as NoteFolder, subpath: parts.slice(1).join('/') }
-  }
-  if (top === 'inbox' && !atRoot) {
-    return { folder: 'inbox', subpath: parts.slice(1).join('/') }
-  }
-  return { folder: 'inbox', subpath: parts.join('/') }
-}
-
-async function openDatabase(csvPath: string): Promise<DatabaseDoc> {
-  const rel = dbToPosix(csvPath)
-  const csvText = await readFileTextOrNull(rel)
-  if (csvText === null) throw new Error(`Database not found: ${rel}`)
-
-  const existing = await dbReadSidecar(rel)
-  if (existing) {
-    const rows = parseRows(csvText, existing.fields, existing.idFieldId, dbGenId)
-    const pageHasContent = await dbReadPageFlags(existing.pages)
-    return dbHydrate(rel, existing, rows, pageHasContent)
-  }
-
-  // Adopt a plain CSV: infer the schema + materialize (matches desktop readDatabase).
-  const grid = parseCsv(csvText)
-  const headers = grid[0] ?? []
-  const { fields, idFieldId } = inferFields(headers, grid.slice(1, 1 + SCHEMA_SAMPLE_ROWS), dbGenId)
-  const { views, activeViewId } = buildDefaultViews(fields, dbGenId)
-  const sidecar: DatabaseSidecar = { version: 1, idFieldId, fields, views, activeViewId }
-  const rows = parseRows(csvText, fields, idFieldId, dbGenId)
-  await dbPersistSidecar(rel, sidecar)
-  await writeNote(rel, serializeRows(rows, fields)) // canonicalize + persist ids
-  return dbHydrate(rel, sidecar, rows)
-}
-
-async function writeDatabaseRows(csvPath: string, rows: DbRow[]): Promise<DatabaseDoc> {
-  const rel = dbToPosix(csvPath)
-  const sidecar = await dbReadSidecar(rel)
-  if (!sidecar) throw new Error(`Database sidecar missing: ${rel}`)
-  await writeNote(rel, serializeRows(rows, sidecar.fields))
-  return dbHydrate(rel, sidecar, rows.map((r) => ({ ...r })))
-}
-
-async function writeDatabaseSchema(
-  csvPath: string,
-  sidecar: DatabaseSidecar,
-  rows: DbRow[]
-): Promise<DatabaseDoc> {
-  const rel = dbToPosix(csvPath)
-  const normalized = dbNormalizeSidecar(sidecar)
-  if (!normalized) throw new Error(`Invalid database schema: ${rel}`)
-  await dbPersistSidecar(rel, normalized)
-  await writeNote(rel, serializeRows(rows, normalized.fields))
-  return dbHydrate(rel, normalized, rows.map((r) => ({ ...r })))
-}
-
-async function createDatabase(
-  folder: NoteFolder,
-  subpath: string,
-  title?: string
-): Promise<DatabaseDoc> {
-  const atRoot = await primaryNotesAtRoot()
-  const baseTitle = (title ?? 'Untitled Database').trim() || 'Untitled Database'
-  const baseName = baseTitle.replace(DB_TITLE_BAD, '-')
-  const dirRel = vaultRelDir(folder, subpath, atRoot)
-  const csvFor = (name: string): string =>
-    csvPathForFormDir(joinSub(dirRel, `${name}${FORM_DIR_SUFFIX}`))
-  // Resolve a non-colliding <Name>.base under the directory.
-  let name = baseName
-  let n = 2
-  while ((await readFileTextOrNull(csvFor(name))) !== null) name = `${baseName} ${n++}`
-  const csvPath = csvFor(name)
-  const folderSub = joinSub(subpath, `${name}${FORM_DIR_SUFFIX}`)
-
-  const idField: DbField = { id: dbGenId(), name: 'id', type: 'text', hidden: true }
-  const nameField: DbField = { id: dbGenId(), name: 'Name', type: 'text' }
-  const fields = [idField, nameField]
-  const { views, activeViewId } = buildDefaultViews(fields, dbGenId)
-  const sidecar: DatabaseSidecar = { version: 1, idFieldId: idField.id, fields, views, activeViewId }
-
-  await createFolder(folder, folderSub)
-  await dbPersistSidecar(csvPath, sidecar)
-  await writeNote(csvPath, serializeRows([], fields))
-  return dbHydrate(csvPath, sidecar, [])
-}
-
-async function createRecordPage(csvPath: string, title: string, body: string): Promise<string> {
-  const formDir = formDirFromCsvPath(dbToPosix(csvPath))
-  if (!formDir) throw new Error(`Not a database folder: ${csvPath}`)
-  const safe = (title.trim() || 'Untitled').replace(/[\\/]/g, '-')
-  let finalTitle = safe
-  let n = 2
-  while ((await readFileTextOrNull(`${formDir}/${finalTitle}.md`)) !== null) {
-    finalTitle = `${safe} ${n++}`
-  }
-  const noteRel = `${formDir}/${finalTitle}.md`
-  await writeNote(noteRel, body)
-  return noteRel
-}
-
-async function renameDatabase(csvPath: string, newTitle: string): Promise<string> {
-  const oldFormDir = formDirFromCsvPath(dbToPosix(csvPath))
-  if (!oldFormDir) throw new Error(`Not a database folder: ${csvPath}`)
-  const parentRel = oldFormDir.includes('/') ? oldFormDir.slice(0, oldFormDir.lastIndexOf('/')) : ''
-  const safeName = (newTitle.trim() || 'Untitled Database').replace(DB_TITLE_BAD, '-')
-  const makeFormDir = (name: string): string =>
-    parentRel ? `${parentRel}/${name}${FORM_DIR_SUFFIX}` : `${name}${FORM_DIR_SUFFIX}`
-  let targetFormDir = makeFormDir(safeName)
-  if (targetFormDir === oldFormDir) return csvPath
-  let n = 2
-  while ((await readFileTextOrNull(csvPathForFormDir(targetFormDir))) !== null) {
-    targetFormDir = makeFormDir(`${safeName} ${n++}`)
-  }
-  const atRoot = await primaryNotesAtRoot()
-  const { folder, subpath: oldSub } = splitVaultPath(oldFormDir, atRoot)
-  const { subpath: newSub } = splitVaultPath(targetFormDir, atRoot)
-  await renameFolder(folder, oldSub, newSub)
-  return csvPathForFormDir(targetFormDir)
-}
-
-async function listDatabases(): Promise<DatabaseSummary[]> {
-  const [folders, atRoot] = await Promise.all([listFolders(), primaryNotesAtRoot()])
-  const out: DatabaseSummary[] = []
-  for (const f of folders) {
-    if (!isFormDirName(f.subpath)) continue
-    // The folder subpath is folder-relative; reconstruct the vault-relative path.
-    const csv = csvPathForFormDir(vaultRelDir(f.folder, f.subpath, atRoot))
-    out.push({ path: csv, title: dbTitleFromPath(csv) })
-  }
-  return out.sort((a, b) => a.title.localeCompare(b.title))
-}
+const {
+  openDatabase,
+  writeDatabaseRows,
+  writeDatabaseSchema,
+  createDatabase,
+  createRecordPage,
+  renameDatabase,
+  listDatabases
+} = dbOps
 
 // --------------------------------------------------------------------
 // Demo tour
@@ -928,6 +727,51 @@ function generateDemoTour(): Promise<VaultDemoTourResult> {
 
 function removeDemoTour(): Promise<VaultDemoTourResult> {
   return jsonRequest<VaultDemoTourResult>('/demo/remove', { method: 'POST' })
+}
+
+// Workflows are authored as files under `.zennotes/workflows`, which the web
+// app cannot reach, so it simply has none. The canvas still renders, it is
+// just empty, which is friendlier than an error the user cannot act on.
+function listWorkflows(): Promise<WorkflowFile[]> {
+  return Promise.resolve([])
+}
+
+// Authoring is a different matter from listing: rejecting is the only honest
+// answer, because resolving would leave the editor showing a saved workflow
+// that exists nowhere.
+function writeWorkflow(_input: WriteWorkflowInput): Promise<WorkflowFile> {
+  return Promise.reject(new Error('Editing workflows is unavailable on the web'))
+}
+
+function deleteWorkflow(_sourcePath: string): Promise<void> {
+  return Promise.reject(new Error('Editing workflows is unavailable on the web'))
+}
+
+// Applying, undoing and the run history all need the local filesystem: the
+// journal that makes a run undoable is a file in the vault, and without it
+// there is no honest way to promise an undo. Rejecting is the only answer that
+// does not overstate what the web app can do, and it means a run can never land
+// somewhere its undo could not reach.
+function applyWorkflow(_input: ApplyWorkflowInput): Promise<WorkflowRunReceipt> {
+  return Promise.reject(new Error('Running workflows is unavailable on the web'))
+}
+
+function undoWorkflowRun(_runId: string): Promise<WorkflowUndoResult> {
+  return Promise.reject(new Error('Running workflows is unavailable on the web'))
+}
+
+// A read, not a run: a vault the web app cannot run workflows in simply has no
+// recorded runs, the same answer `listWorkflows` gives for the files. A future
+// history panel then shows an empty list here instead of tripping on a
+// rejection where the workflow list quietly showed nothing.
+function listWorkflowRuns(): Promise<WorkflowRunSummary[]> {
+  return Promise.resolve([])
+}
+
+// Nothing can have recorded a run here (see above), so there is never anything
+// to delete: zero, not a rejection, for the same reason the list is empty.
+function deleteWorkflowRuns(_workflowId: string): Promise<number> {
+  return Promise.resolve(0)
 }
 
 // Custom templates require local-filesystem CRUD, which the web app does not
@@ -980,8 +824,27 @@ async function importFilesToNote(
   return results
 }
 
-async function importPastedImage(_input: PastedImageInput): Promise<ImportedAsset> {
-  throw new Error('Clipboard image paste is only available in the desktop app right now.')
+async function importPastedImage(input: PastedImageInput): Promise<ImportedAsset> {
+  const blob = new Blob([input.data as BlobPart], { type: input.mimeType })
+  if (blob.size === 0) throw new Error('Clipboard image is empty.')
+  // Named by the shared helper the desktop paste uses, so the stem is
+  // scrubbed of the characters that break the `![[...]]` wikilink returned
+  // below ([ ] # ^ and friends). The server's upload cleaning leaves those
+  // in, and a raw "diagram [v2] #3.png" rendered as a broken embed.
+  const filename = pastedImageFilename(input, new Date())
+  const form = new FormData()
+  form.append('file', blob, filename)
+  form.append('notePath', '')
+  const res = await fetch(`${API_BASE}/assets/upload`, {
+    method: 'POST',
+    body: form,
+    credentials: 'same-origin'
+  })
+  if (!res.ok) throw new Error(`paste upload failed: ${res.status}`)
+  const uploaded = (await res.json()) as ImportedAsset
+  // A paste embeds as a wikilink, matching the desktop paste path; the
+  // server's markdown is note-relative and meant for drag-drop imports.
+  return { name: uploaded.name, path: uploaded.path, markdown: `![[${uploaded.path}]]`, kind: 'image' }
 }
 
 function renameAsset(relPath: string, nextName: string): Promise<AssetMeta> {
@@ -998,28 +861,40 @@ function moveAsset(relPath: string, targetDir: string): Promise<AssetMeta> {
   })
 }
 
-async function duplicateAsset(_relPath: string): Promise<AssetMeta> {
-  throw new Error('Asset duplication is only available in the desktop app right now.')
+function duplicateAsset(relPath: string): Promise<AssetMeta> {
+  return jsonRequest<AssetMeta>('/assets/duplicate', {
+    method: 'POST',
+    body: { path: relPath }
+  })
 }
 
-async function deleteAsset(_relPath: string): Promise<DeletedAsset> {
-  throw new Error('Asset deletion is only available in the desktop app right now.')
+function deleteAsset(relPath: string): Promise<DeletedAsset> {
+  return jsonRequest<DeletedAsset>('/assets/delete', {
+    method: 'POST',
+    body: { path: relPath }
+  })
 }
 
-async function restoreDeletedAsset(_asset: DeletedAsset): Promise<AssetMeta> {
-  throw new Error('Asset restore is only available in the desktop app right now.')
+function restoreDeletedAsset(asset: DeletedAsset): Promise<AssetMeta> {
+  return jsonRequest<AssetMeta>('/assets/restore', {
+    method: 'POST',
+    body: { ...asset }
+  })
 }
 
-async function listDeletedAssets(): Promise<DeletedAsset[]> {
-  return []
+function listDeletedAssets(): Promise<DeletedAsset[]> {
+  return jsonRequest<DeletedAsset[]>('/assets/deleted')
 }
 
-async function purgeDeletedAsset(_undoToken: string): Promise<void> {
-  throw new Error('Asset deletion is only available in the desktop app right now.')
+async function purgeDeletedAsset(undoToken: string): Promise<void> {
+  await jsonRequest<void>('/assets/purge', {
+    method: 'POST',
+    body: { undoToken }
+  })
 }
 
 async function emptyDeletedAssets(): Promise<void> {
-  throw new Error('Asset deletion is only available in the desktop app right now.')
+  await jsonRequest<void>('/assets/empty-deleted', { method: 'POST' })
 }
 
 // Bucket for File objects "pretending" to be filesystem paths. The
@@ -1117,6 +992,10 @@ type VaultChangeListener = (ev: VaultChangeEvent) => void
 const vaultChangeListeners = new Set<VaultChangeListener>()
 let watchSocket: WebSocket | null = null
 let watchReconnectTimer: number | null = null
+// A dropped socket means lost events, not just downtime: once the next
+// connection opens, tell listeners to re-pull everything rather than
+// resuming the stream as if nothing happened.
+let watchHadGap = false
 
 function ensureWatchSocket(): void {
   if (watchSocket && watchSocket.readyState <= 1) return
@@ -1124,6 +1003,12 @@ function ensureWatchSocket(): void {
   const url = `${proto}//${window.location.host}${API_BASE}/watch`
   const ws = new WebSocket(url)
   watchSocket = ws
+  ws.addEventListener('open', () => {
+    if (!watchHadGap) return
+    watchHadGap = false
+    const resync: VaultChangeEvent = { kind: 'change', path: '', folder: 'inbox', scope: 'resync' }
+    for (const cb of vaultChangeListeners) cb(resync)
+  })
   ws.addEventListener('message', e => {
     try {
       const ev = JSON.parse(String(e.data)) as VaultChangeEvent
@@ -1134,11 +1019,14 @@ function ensureWatchSocket(): void {
   })
   ws.addEventListener('close', () => {
     watchSocket = null
-    if (vaultChangeListeners.size > 0 && watchReconnectTimer === null) {
-      watchReconnectTimer = window.setTimeout(() => {
-        watchReconnectTimer = null
-        ensureWatchSocket()
-      }, 1500)
+    if (vaultChangeListeners.size > 0) {
+      watchHadGap = true
+      if (watchReconnectTimer === null) {
+        watchReconnectTimer = window.setTimeout(() => {
+          watchReconnectTimer = null
+          ensureWatchSocket()
+        }, 1500)
+      }
     }
   })
   ws.addEventListener('error', () => {
@@ -1279,6 +1167,11 @@ async function moveExternalFileToVault(): Promise<MoveExternalFileResult> {
 async function openMarkdownFile(_absPath: string): Promise<boolean> {
   // The web client has no OS filesystem to open standalone markdown files
   // from; drag-and-drop-to-open is a desktop-only capability.
+  return false
+}
+
+async function openFileDialog(): Promise<boolean> {
+  // Native "Open File…" picker is desktop-only (no OS file dialog on web).
   return false
 }
 
@@ -1456,6 +1349,7 @@ export const httpBridge: ZenBridge = {
   getRemoteWorkspaceInfo,
   connectRemoteWorkspace,
   disconnectRemoteWorkspace,
+  retryWorkspaceBoot,
   listRemoteWorkspaceProfiles,
   saveRemoteWorkspaceProfile: (_input: RemoteWorkspaceProfileInput) => saveRemoteWorkspaceProfile(),
   deleteRemoteWorkspaceProfile: (_id: string) => deleteRemoteWorkspaceProfile(),
@@ -1480,6 +1374,13 @@ export const httpBridge: ZenBridge = {
   hasAssetsDir,
   generateDemoTour,
   removeDemoTour,
+  listWorkflows,
+  writeWorkflow,
+  deleteWorkflow,
+  applyWorkflow,
+  undoWorkflowRun,
+  listWorkflowRuns,
+  deleteWorkflowRuns,
   listTemplates,
   readTemplate,
   writeTemplate,
@@ -1511,7 +1412,11 @@ export const httpBridge: ZenBridge = {
   unarchiveNote,
   duplicateNote,
   exportNotePdf,
+  exportNoteDocx,
   revealNote,
+  openExternalFile,
+  openAssetExternally,
+  fetchLinkMetadata,
   revealNoteTarget,
   revealFilePath,
   moveNote,
@@ -1551,6 +1456,7 @@ export const httpBridge: ZenBridge = {
   writeExternalFile,
   moveExternalFileToVault,
   openMarkdownFile,
+  openFileDialog,
   openFolderTemporary,
   toggleQuickCapture,
   getQuickCaptureHotkey,
@@ -1590,6 +1496,16 @@ export const httpBridge: ZenBridge = {
   deleteCustomTheme: async () => {},
   createCustomTheme: async () => null,
   onCustomThemesChange: () => () => {},
+  listCustomCodeLanguages: async () => [],
+  installCustomCodeLanguage: async (_input: CustomCodeLanguageInstallInput) => {
+    throw new Error('Custom code languages are available in the desktop app.')
+  },
+  updateCustomCodeLanguage: async (_input: CustomCodeLanguageUpdateInput) => {
+    throw new Error('Custom code languages are available in the desktop app.')
+  },
+  revealCustomCodeLanguagesDir: async () => {},
+  deleteCustomCodeLanguage: async () => {},
+  onCustomCodeLanguagesChange: () => () => {},
   listOverrides: async () => [],
   revealOverridesDir: async () => {},
   deleteOverride: async () => {},

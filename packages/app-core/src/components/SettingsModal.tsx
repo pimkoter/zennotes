@@ -21,6 +21,7 @@ import {
 import type {
   AppUpdateState,
   CliInstallStatus,
+  NoteFolder,
   RaycastExtensionStatus,
   RemoteWorkspaceProfile,
   RemoteWorkspaceProfileInput,
@@ -35,7 +36,15 @@ import {
   type McpInstructionsPayload,
   type McpServerRuntime,
 } from "@shared/mcp-clients";
+import { normalizeTasksExcludedFolder } from "@shared/tasks-excluded-folders";
+import {
+  DEFAULT_TYPST_PREAMBLE_FOLDER as TYPST_PREAMBLE_FOLDER,
+  normalizeTypstPreambleFolder,
+  resolveTypstPreambleFolder,
+} from "@shared/typst-preamble-folder";
 import { useStore, refreshCustomThemes, refreshOverrides } from "../store";
+import { WORKFLOW_PRESETS, hiddenPresetsInOrder } from "@shared/workflows/presets";
+import { startWorkflowTutorial } from "../lib/workflow-tutorial-flow";
 import type { LineNumberMode, WhichKeyHintMode } from "../store";
 import type {
   KeymapDefinition,
@@ -45,6 +54,7 @@ import type {
 import {
   findKeymapConflict,
   formatKeymapBinding,
+  getDefaultKeymapBinding,
   getKeymapBinding,
   getKeymapDefinitionsByGroup,
   getKeymapDisplay,
@@ -82,6 +92,11 @@ import {
   getSystemFolderLabel,
 } from "../lib/system-folder-labels";
 import {
+  DEFAULT_FOLDER_PATHS,
+  describeSystemFolderPathIssue,
+  resolveFolderPath,
+} from "@shared/system-folder-paths";
+import {
   normalizeDailyNoteLocale,
   normalizeDailyNotesDirectory,
   normalizeDailyNoteTitlePattern,
@@ -108,6 +123,8 @@ import { promptApp } from "../lib/prompt-requests";
 import { isImeComposing } from "../lib/ime";
 import { RemoteWorkspaceProfileModal } from "./RemoteWorkspaceProfileModal";
 import { Button } from "./ui/Button";
+import { CustomCodeLanguagesSettings } from "./CustomCodeLanguagesSettings";
+import { TextReplacementsSettings } from "./TextReplacementsSettings";
 
 type SettingsCategoryId =
   | "appearance"
@@ -439,14 +456,56 @@ export function SettingsModal(): JSX.Element {
   );
   const completedTaskStyle = useStore((s) => s.completedTaskStyle);
   const setCompletedTaskStyle = useStore((s) => s.setCompletedTaskStyle);
+  const showArchivedTasks = useStore((s) => s.showArchivedTasks);
+  const setShowArchivedTasks = useStore((s) => s.setShowArchivedTasks);
+  const mathRenderer = useStore((s) => s.mathRenderer);
+  const typstTagPreambles = useStore((s) => s.typstTagPreambles);
+  const setTypstTagPreambles = useStore((s) => s.setTypstTagPreambles);
+  const setMathRenderer = useStore((s) => s.setMathRenderer);
+  const looseMathDelimiters = useStore((s) => s.looseMathDelimiters);
+  const setLooseMathDelimiters = useStore((s) => s.setLooseMathDelimiters);
   const keepViewModeAcrossNotes = useStore((s) => s.keepViewModeAcrossNotes);
+  const defaultPaneMode = useStore((s) => s.defaultPaneMode);
+  const setDefaultPaneMode = useStore((s) => s.setDefaultPaneMode);
   const setKeepViewModeAcrossNotes = useStore(
     (s) => s.setKeepViewModeAcrossNotes,
   );
+  const syncTitleHeadingOnRename = useStore(
+    (s) => s.syncTitleHeadingOnRename,
+  );
+  const setSyncTitleHeadingOnRename = useStore(
+    (s) => s.setSyncTitleHeadingOnRename,
+  );
   const markdownSnippets = useStore((s) => s.markdownSnippets);
   const setMarkdownSnippets = useStore((s) => s.setMarkdownSnippets);
+  const showHeadingLevelLabels = useStore((s) => s.showHeadingLevelLabels);
+  const listIndentGuides = useStore((s) => s.listIndentGuides);
+  const setShowHeadingLevelLabels = useStore(
+    (s) => s.setShowHeadingLevelLabels,
+  );
+  const editorTabSize = useStore((s) => s.editorTabSize);
+  const setEditorTabSize = useStore((s) => s.setEditorTabSize);
+  const setListIndentGuides = useStore((s) => s.setListIndentGuides);
+  const textReplacementsEnabled = useStore(
+    (s) => s.textReplacementsEnabled,
+  );
+  const setTextReplacementsEnabled = useStore(
+    (s) => s.setTextReplacementsEnabled,
+  );
+  const textReplacements = useStore((s) => s.textReplacements);
+  const setTextReplacements = useStore((s) => s.setTextReplacements);
+  const autoPairs = useStore((s) => s.autoPairs);
+  const setAutoPairs = useStore((s) => s.setAutoPairs);
+  const autoPairQuotesInProse = useStore((s) => s.autoPairQuotesInProse);
+  const setAutoPairQuotesInProse = useStore(
+    (s) => s.setAutoPairQuotesInProse,
+  );
   const tabsEnabled = useStore((s) => s.tabsEnabled);
   const setTabsEnabled = useStore((s) => s.setTabsEnabled);
+  const workflowsEnabled = useStore((s) => s.workflowsEnabled);
+  const setWorkflowsEnabled = useStore((s) => s.setWorkflowsEnabled);
+  const hiddenWorkflowPresets = useStore((s) => s.hiddenWorkflowPresets);
+  const setHiddenWorkflowPresets = useStore((s) => s.setHiddenWorkflowPresets);
   const wrapTabs = useStore((s) => s.wrapTabs);
   const setWrapTabs = useStore((s) => s.setWrapTabs);
   const quickNoteDateTitle = useStore((s) => s.quickNoteDateTitle);
@@ -514,6 +573,8 @@ export function SettingsModal(): JSX.Element {
   const supportsCustomTemplates =
     zenBridge.getCapabilities().supportsCustomTemplates &&
     workspaceMode !== "remote";
+  const supportsCustomCodeLanguages =
+    !!zenBridge.getCapabilities().supportsCustomCodeLanguages;
   const [templateEditor, setTemplateEditor] = useState<{
     initialRaw?: string;
     sourcePath?: string;
@@ -613,6 +674,8 @@ export function SettingsModal(): JSX.Element {
   const setDarkSidebar = useStore((s) => s.setDarkSidebar);
   const showSidebarChevrons = useStore((s) => s.showSidebarChevrons);
   const setShowSidebarChevrons = useStore((s) => s.setShowSidebarChevrons);
+  const nestedTags = useStore((s) => s.nestedTags);
+  const setNestedTags = useStore((s) => s.setNestedTags);
   const pdfExportUseTheme = useStore((s) => s.pdfExportUseTheme);
   const setPdfExportUseTheme = useStore((s) => s.setPdfExportUseTheme);
   const appUpdateState = useAppUpdateState();
@@ -625,6 +688,11 @@ export function SettingsModal(): JSX.Element {
   // Lazy-load the system font list on mount. Retried on every mount
   // when the list comes back empty (IPC failure / no fonts yet).
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  // Why a folder-path edit was refused, per folder. Cleared as soon as the same
+  // row accepts a value (#533).
+  const [folderPathIssues, setFolderPathIssues] = useState<
+    Partial<Record<NoteFolder, string | null>>
+  >({});
   const [vaultTextSearchCapabilities, setVaultTextSearchCapabilities] =
     useState<VaultTextSearchCapabilities | null>(null);
   const searchToolPaths = useMemo<VaultTextSearchToolPaths>(
@@ -1238,6 +1306,13 @@ export function SettingsModal(): JSX.Element {
             "Show disclosure arrows for collapsible folders and sidebar sections.",
           keywords: ["chevrons", "disclosure"],
         },
+        {
+          id: "nested-tags",
+          title: "Nested tags (tree view)",
+          description:
+            "Show /-separated tags as a collapsible tree in the sidebar and Tags view instead of a flat list.",
+          keywords: ["hierarchical", "tree", "tags", "nested", "hierarchy"],
+        },
       ],
       content: (
         <div className="space-y-6">
@@ -1644,6 +1719,13 @@ export function SettingsModal(): JSX.Element {
               settingId="sidebar-arrows"
               onChange={setShowSidebarChevrons}
             />
+            <ToggleRow
+              label="Nested tags (tree view)"
+              description="Show /-separated tags (like project/compiler) as a collapsible tree in the sidebar and Tags view. Turn off for a flat list of full tag names."
+              value={nestedTags}
+              settingId="nested-tags"
+              onChange={setNestedTags}
+            />
           </Section>
 
           <Section
@@ -1679,6 +1761,11 @@ export function SettingsModal(): JSX.Element {
         "shortcut",
         "task",
         "tasks",
+        "workflow",
+        "workflows",
+        "rename",
+        "title",
+        "heading",
       ],
       searchItems: [
         {
@@ -1765,8 +1852,87 @@ export function SettingsModal(): JSX.Element {
           ],
         },
         {
+          id: "math-renderer",
+          title: "Math renderer",
+          description:
+            "Choose KaTeX or Typst to typeset $…$ and $$…$$ math in the editor and reading view.",
+          keywords: [
+            "math",
+            "katex",
+            "typst",
+            "latex",
+            "equation",
+            "formula",
+            "renderer",
+            "typesetter",
+          ],
+        },
+        {
+          id: "typst-tag-preambles",
+          title: "Typst definitions from tags",
+          description:
+            "Let a note's tags decide which Typst definitions its formulas compile against. Preambles are ordinary notes in the preamble folder.",
+          keywords: [
+            "typst",
+            "preamble",
+            "math",
+            "definitions",
+            "tags",
+            "vec",
+            "notation",
+          ],
+        },
+        {
+          id: "typst-preamble-folder",
+          title: "Typst preamble folder",
+          description:
+            "Which folder holds Typst preamble notes. Its notes are left out of the tag list, so rename it if you keep ordinary tagged notes in a folder called typst.",
+          keywords: [
+            "typst",
+            "preamble",
+            "folder",
+            "tags",
+            "tag list",
+            "let",
+            "variables",
+            "rename",
+          ],
+        },
+        {
+          id: "loose-math-delimiters",
+          title: "Relaxed $$ math delimiters",
+          description:
+            "Render $$…$$ display math even with text before or after the fences, like LaTeX.",
+          keywords: [
+            "math",
+            "display",
+            "dollar",
+            "delimiter",
+            "fence",
+            "inline",
+            "latex",
+            "relaxed",
+            "loose",
+          ],
+        },
+        {
+          id: "sync-title-heading-on-rename",
+          title: "Sync title heading on rename",
+          description:
+            "Renaming a note rewrites its leading # heading to the new name.",
+          keywords: [
+            "rename",
+            "title",
+            "heading",
+            "h1",
+            "sync",
+            "filename",
+            "first line",
+          ],
+        },
+        {
           id: "markdown-overrides",
-          title: "Markdown snippets",
+          title: "Auto-close Markdown",
           description:
             "Auto-close markdown delimiters as you type (** then Space, ``` then Enter).",
           keywords: [
@@ -1778,6 +1944,54 @@ export function SettingsModal(): JSX.Element {
             "markdown",
             "completion",
           ],
+        },
+        {
+          id: "heading-level-labels",
+          title: "Heading level labels",
+          description: "Show H1, H2, H3, and other level labels beside headings.",
+          keywords: ["heading", "header", "h1", "h2", "outline", "level"],
+        },
+        {
+          id: "editor-tab-size",
+          title: "Tab size",
+          description: "Choose how many spaces a tab occupies in the editor.",
+          keywords: ["tab", "indent", "spaces", "width"],
+        },
+        {
+          id: "list-indent-guides",
+          title: "Indent guides",
+          description: "Vertical guide lines at each nested list level.",
+          keywords: ["indent", "guides", "list", "nested", "outline", "lines"],
+        },
+        {
+          id: "text-replacements-enabled",
+          title: "Text replacements",
+          description: "Replace typed snippets such as -> with →.",
+          keywords: ["snippet", "replacement", "arrow", "autocorrect", "expand"],
+        },
+        {
+          id: "auto-pairs",
+          title: "Auto-pair brackets and delimiters",
+          description:
+            "Insert matching [] () and {} as you type; quotes pair in Markdown code.",
+          keywords: [
+            "auto pair",
+            "autopair",
+            "parentheses",
+            "braces",
+            "brackets",
+            "quotes",
+            "code blocks",
+            "completion",
+            "vim",
+          ],
+        },
+        {
+          id: "auto-pair-quotes-in-prose",
+          title: "Auto-pair quotes in prose",
+          description:
+            "Also insert matching quotes outside Markdown code.",
+          keywords: ["auto pair", "autopair", "quotes", "prose", "code blocks"],
         },
         {
           id: "note-tabs",
@@ -1862,6 +2076,36 @@ export function SettingsModal(): JSX.Element {
           description:
             "System-wide shortcut to open the floating capture window.",
           keywords: ["quick capture", "hotkey", "shortcut"],
+        },
+        {
+          id: "custom-code-languages",
+          title: "Custom code languages",
+          description:
+            "Import TextMate grammars for custom fenced code-block highlighting.",
+          keywords: [
+            "syntax",
+            "highlight",
+            "textmate",
+            "grammar",
+            "code fence",
+            "language",
+          ],
+        },
+        {
+          id: "workflows-enabled",
+          title: "Workflows",
+          description:
+            "The Workflows canvas for running repeatable, file-changing steps over the vault.",
+          keywords: [
+            "workflow",
+            "workflows",
+            "automation",
+            "canvas",
+            "pipeline",
+            "graph",
+            "nodes",
+            "run",
+          ],
         },
       ],
       subTabs: [
@@ -2036,7 +2280,13 @@ export function SettingsModal(): JSX.Element {
           searchIds: [
             "live-preview",
             "render-tables",
+            "sync-title-heading-on-rename",
             "markdown-overrides",
+            "heading-level-labels",
+            "editor-tab-size",
+            "list-indent-guides",
+            "auto-pairs",
+            "auto-pair-quotes-in-prose",
             "note-tabs",
             "wrap-note-tabs",
             "word-wrap",
@@ -2080,6 +2330,48 @@ export function SettingsModal(): JSX.Element {
                   ]}
                   onChange={(next) => setCompletedTaskStyle(next)}
                 />
+                <SegmentedRow
+                  label="Math renderer"
+                  description="Which typesetter draws $…$ and $$…$$ math, in both the editor and the reading view. KaTeX reads the math as LaTeX; Typst reads it as Typst markup, so switching reinterprets existing formulas, and each note's math is written for whichever engine you pick."
+                  value={mathRenderer}
+                  settingId="math-renderer"
+                  options={[
+                    { value: "katex", label: "KaTeX" },
+                    { value: "typst", label: "Typst" },
+                  ]}
+                  onChange={(next) => setMathRenderer(next)}
+                />
+                {mathRenderer === "typst" && (
+                  <ToggleRow
+                    label="Typst definitions from tags"
+                    description="Prepend shared Typst definitions to a note's formulas based on its tags, so the same notation can mean different things per subject. Write a preamble as an ordinary note in the preamble folder (`typst` by default), titled with the tag path in dots: `typst/physics.md` applies to #physics, `typst/physics.mechanics.md` to #physics/mechanics, layered general to specific. Preamble notes sync and are editable like any other note, but they never contribute #tags, because their `#let` definitions are Typst variables."
+                    value={typstTagPreambles}
+                    settingId="typst-tag-preambles"
+                    onChange={setTypstTagPreambles}
+                  />
+                )}
+                {mathRenderer === "typst" && typstTagPreambles && (
+                  <TypstPreambleFolderRow settingId="typst-preamble-folder" />
+                )}
+                <ToggleRow
+                  label="Relaxed $$ math delimiters"
+                  description="Render a $$…$$ display block even when text sits before the opening $$ (`Note: $$…$$`) or after the closing $$ (`$$…$$ done`), like LaTeX. Off by default; the surrounding text moves to its own line in the reading view, while the editor keeps showing the raw source. Leave off if you write literal $$ in prose."
+                  value={looseMathDelimiters}
+                  settingId="loose-math-delimiters"
+                  onChange={setLooseMathDelimiters}
+                />
+                <SegmentedRow
+                  label="Default view mode"
+                  description="The mode a note opens in before you have picked one for it: Edit to write, Preview to read, Split for both. Each note still remembers the mode you last used on it."
+                  value={defaultPaneMode}
+                  settingId="default-view-mode"
+                  options={[
+                    { value: "edit", label: "Edit" },
+                    { value: "split", label: "Split" },
+                    { value: "preview", label: "Preview" },
+                  ]}
+                  onChange={(next) => setDefaultPaneMode(next)}
+                />
                 <ToggleRow
                   label="Keep view mode when switching notes"
                   description="Stay in the current Edit / Split / Preview mode when you open another note, instead of each note reopening in its own last mode. Handy if you like reading in Preview."
@@ -2088,12 +2380,60 @@ export function SettingsModal(): JSX.Element {
                   onChange={setKeepViewModeAcrossNotes}
                 />
                 <ToggleRow
-                  label="Markdown snippets"
+                  label="Sync title heading on rename"
+                  description="Renaming a note also rewrites its leading `# heading` to the new name, so the title line stops drifting from the filename. Only an existing top-level heading is rewritten — a note that opens with prose, a list, or a deeper heading is left alone, so deleting the `#` line opts that note out for good."
+                  value={syncTitleHeadingOnRename}
+                  settingId="sync-title-heading-on-rename"
+                  onChange={setSyncTitleHeadingOnRename}
+                />
+                <ToggleRow
+                  label="Auto-close Markdown"
                   description="Auto-close markdown as you type: ** / __ / ~~ / ` / == / [[ / %% then Space wrap the cursor, and ``` / ~~~ / $$ then Enter expand a fenced block. In Vim mode this only applies in insert mode."
                   value={markdownSnippets}
                   settingId="markdown-overrides"
                   onChange={setMarkdownSnippets}
                 />
+                <ToggleRow
+                  label="Heading level labels"
+                  description="Show H1, H2, H3, and other level labels before headings. Heading fold arrows remain available either way."
+                  value={showHeadingLevelLabels}
+                  settingId="heading-level-labels"
+                  onChange={setShowHeadingLevelLabels}
+                />
+                <SliderRow
+                  label="Tab size"
+                  description="How many spaces a tab occupies in the editor and when indenting. Nested list levels also render this many columns deep, whatever the note's source spacing."
+                  value={editorTabSize}
+                  min={1}
+                  max={8}
+                  step={1}
+                  unit=" spaces"
+                  settingId="editor-tab-size"
+                  onChange={setEditorTabSize}
+                />
+                <ToggleRow
+                  label="Indent guides"
+                  description="Draw a vertical guide line at each nested list level in the editor. Guides sit at the Tab size columns."
+                  value={listIndentGuides}
+                  settingId="list-indent-guides"
+                  onChange={setListIndentGuides}
+                />
+                <ToggleRow
+                  label="Auto-pair brackets and delimiters"
+                  description="Insert matching [] () and {} as you type, wrap selected text, and skip over a closing delimiter that is already present. Quotes pair inside inline code and fenced code blocks. In Vim mode this only applies in insert mode."
+                  value={autoPairs}
+                  settingId="auto-pairs"
+                  onChange={setAutoPairs}
+                />
+                {autoPairs && (
+                  <ToggleRow
+                    label="Auto-pair quotes in prose"
+                    description={'Also insert matching "" and \'\' outside inline code and fenced code blocks.'}
+                    value={autoPairQuotesInProse}
+                    settingId="auto-pair-quotes-in-prose"
+                    onChange={setAutoPairQuotesInProse}
+                  />
+                )}
                 <ToggleRow
                   label="Note tabs"
                   description="Open notes in tabs and allow split-friendly tab workflows. Turn off to keep the simpler single-note behavior."
@@ -2171,6 +2511,46 @@ export function SettingsModal(): JSX.Element {
           ),
         },
         {
+          id: "text-replacements",
+          title: "Text replacements",
+          description: "Expand short triggers into symbols, words, or phrases as you type.",
+          searchIds: ["text-replacements-enabled"],
+          content: (
+            <div className="space-y-6">
+              <Section
+                title="Text replacements"
+                description="Create snippets that expand immediately in the note editor."
+              >
+                <ToggleRow
+                  label="Enable text replacements"
+                  description="Replace matching text as you type. The default rule turns -> into →. In Vim mode, replacements run only in insert mode."
+                  value={textReplacementsEnabled}
+                  settingId="text-replacements-enabled"
+                  onChange={setTextReplacementsEnabled}
+                />
+                <TextReplacementsSettings
+                  replacements={textReplacements}
+                  onChange={setTextReplacements}
+                />
+              </Section>
+            </div>
+          ),
+        },
+        {
+          id: "languages",
+          title: "Languages",
+          searchIds: ["custom-code-languages"],
+          content: supportsCustomCodeLanguages ? (
+            <div {...settingsSearchTargetProps("custom-code-languages")}>
+              <CustomCodeLanguagesSettings />
+            </div>
+          ) : (
+            <InlineNote>
+              Custom code languages are available in the desktop app.
+            </InlineNote>
+          ),
+        },
+        {
           id: "quick-capture",
           title: "Quick capture",
           searchIds: [
@@ -2185,6 +2565,102 @@ export function SettingsModal(): JSX.Element {
                 description="Floating capture window for thoughts you want in the vault without leaving whatever you're doing."
               >
                 <QuickCaptureHotkeyRow settingId="quick-capture-hotkey" />
+              </Section>
+            </div>
+          ),
+        },
+        {
+          id: "workflows",
+          title: "Workflows",
+          description:
+            "The Workflows canvas, and whether it appears in the app at all.",
+          searchIds: [
+            "workflows-enabled",
+            "workflow-hidden-recipes",
+            "workflow-tutorial",
+          ],
+          content: (
+            <div className="space-y-6">
+              <Section
+                title="Workflows"
+                description="Repeatable steps you write once and run over the vault, edited on a canvas in their own view."
+              >
+                <ToggleRow
+                  label="Workflows"
+                  description="Run saved, repeatable steps over your notes from a canvas view. Off by default; turning it on adds the Workflows view with its sidebar row, command, and Leader shortcut. Turning it off hides all of that again and closes the view if it is open."
+                  value={workflowsEnabled}
+                  settingId="workflows-enabled"
+                  onChange={setWorkflowsEnabled}
+                />
+                <div
+                  className="flex items-center justify-between gap-5 px-5 py-4"
+                  {...settingsSearchTargetProps("workflow-tutorial")}
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-ink-900">
+                      Guided tutorial
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-ink-500">
+                      A hands-on walkthrough of the whole loop: canvas, text,
+                      editing, activating, the dry run, apply, and undo. It
+                      seeds a small practice folder to learn on and removes
+                      everything it created when you finish.
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="shrink-0"
+                    onClick={() => void startWorkflowTutorial()}
+                  >
+                    Start tutorial
+                  </Button>
+                </div>
+                {(() => {
+                  const total = WORKFLOW_PRESETS.length;
+                  const hidden = hiddenPresetsInOrder(hiddenWorkflowPresets).length;
+                  const copy =
+                    hidden === 0
+                      ? `All ${total} shipped recipes appear in the recipe gallery, behind New workflow in the Workflows view.`
+                      : hidden === total
+                        ? "Every shipped recipe is hidden; the recipe gallery (New workflow) starts from Blank."
+                        : `${hidden} of ${total} recipes are hidden from the recipe gallery, behind New workflow (press x on a recipe there to hide one at a time).`;
+                  return (
+                    <div
+                      className="flex items-center justify-between gap-5 px-5 py-4"
+                      {...settingsSearchTargetProps("workflow-hidden-recipes")}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-ink-900">
+                          Built-in recipes
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-ink-500">
+                          {copy}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                          size="sm"
+                          disabled={hidden === total}
+                          onClick={() =>
+                            setHiddenWorkflowPresets(
+                              WORKFLOW_PRESETS.map((preset) => preset.id),
+                            )
+                          }
+                        >
+                          Hide all
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={hidden === 0}
+                          onClick={() => setHiddenWorkflowPresets([])}
+                        >
+                          Restore all
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </Section>
             </div>
           ),
@@ -2258,6 +2734,37 @@ export function SettingsModal(): JSX.Element {
             "workflow",
           ],
         },
+        {
+          id: "show-archived-tasks",
+          title: "Show tasks from archived notes",
+          description:
+            "Keep archived notes' tasks in the Tasks list, boards, and calendars instead of retiring them with the note.",
+          keywords: [
+            "archive",
+            "archived",
+            "retire",
+            "hide",
+            "done",
+            "history",
+            "old",
+          ],
+        },
+        {
+          id: "tasks-excluded-folders",
+          title: "Folders excluded from Tasks",
+          description:
+            "Keep checkbox-heavy folders (reading lists, media backlogs) out of the Tasks list, boards, and calendars. Stored in the vault, honored by every runtime.",
+          keywords: [
+            "exclude",
+            "excluded",
+            "checklist",
+            "reading list",
+            "backlog",
+            "folder",
+            "hide",
+            "checkbox",
+          ],
+        },
       ],
       content: (
         <div className="space-y-6">
@@ -2266,6 +2773,24 @@ export function SettingsModal(): JSX.Element {
             description="Set up the columns for the Tasks Kanban Custom status board. Other @field boards (sprint, area, …) appear automatically as you tag tasks — no setup needed."
           >
             <KanbanStatusesRow settingId="kanban-statuses" />
+          </Section>
+          <Section
+            title="Archived notes"
+            description="What happens to a note's tasks when the note moves to the Archive."
+          >
+            <ToggleRow
+              label="Show tasks from archived notes"
+              description="Keep archived notes' tasks in the Tasks list, boards, and calendars. Off by default: archiving a note retires its tasks with it (the markdown is untouched, and un-archiving brings them back). Archiving a note that still has open tasks always asks first."
+              value={showArchivedTasks}
+              settingId="show-archived-tasks"
+              onChange={setShowArchivedTasks}
+            />
+          </Section>
+          <Section
+            title="Checklists"
+            description="Not every checkbox is a task. Exclude whole folders here, or opt out a single note with tasks: false in its frontmatter (tasks: note keeps a #task note on the board while silencing its checklist)."
+          >
+            <TasksExcludedFoldersRow settingId="tasks-excluded-folders" />
           </Section>
           <button
             type="button"
@@ -3013,8 +3538,8 @@ export function SettingsModal(): JSX.Element {
                 />
               </Section>
               <Section
-                title="New Drawings & Databases"
-                description="Where new Excalidraw drawings and databases are created, so they don't clutter the root of your vault."
+                title="New Drawings, Databases & Tasks"
+                description="Where new Excalidraw drawings, databases, and task files are created, so they don't clutter the root of your vault."
               >
                 <SegmentedRow
                   label="Default drawings location"
@@ -3078,6 +3603,39 @@ export function SettingsModal(): JSX.Element {
                       void persistVaultSettings({
                         ...vaultSettings,
                         databasesLocation: { mode: "folder", folder: next ?? "" },
+                      })
+                    }
+                  />
+                )}
+                <SegmentedRow
+                  label="Default tasks location"
+                  description="Where new task files (from `+ New task`, the `a` key, `:newtask`, or the command palette) are created. `New Task in Folder…` and `:newtask <folder>` still override this per task."
+                  value={vaultSettings.tasksLocation?.mode ?? "primary"}
+                  settingId="tasks-location"
+                  options={[
+                    { value: "primary", label: "Primary location" },
+                    { value: "active-note", label: "Active note's folder" },
+                    { value: "folder", label: "Specific folder" },
+                  ]}
+                  onChange={(mode) =>
+                    void persistVaultSettings({
+                      ...vaultSettings,
+                      tasksLocation: { ...vaultSettings.tasksLocation, mode },
+                    })
+                  }
+                />
+                {vaultSettings.tasksLocation?.mode === "folder" && (
+                  <TextInputRow
+                    label="Tasks folder"
+                    description="Vault-relative subfolder for new task files, e.g. `Tasks` or `Projects/Inbox`."
+                    value={vaultSettings.tasksLocation?.folder ?? ""}
+                    placeholder="Tasks"
+                    settingId="tasks-folder"
+                    commitOnBlur
+                    onChange={(next) =>
+                      void persistVaultSettings({
+                        ...vaultSettings,
+                        tasksLocation: { mode: "folder", folder: next ?? "" },
                       })
                     }
                   />
@@ -3675,6 +4233,10 @@ export function SettingsModal(): JSX.Element {
             "archive-label",
             "trash-label",
             "tasks-label",
+            "inbox-path",
+            "quick-notes-path",
+            "archive-path",
+            "trash-path",
           ],
           content: (
             <div className="space-y-6">
@@ -3730,6 +4292,61 @@ export function SettingsModal(): JSX.Element {
                   {getSystemFolderLabel("trash", systemFolderLabels)}, and{" "}
                   {getSystemFolderLabel("tasks", systemFolderLabels)}.
                 </InlineNote>
+              </Section>
+              <Section
+                title="Folder Paths"
+                description="Point each system folder at a directory in your vault: one folder name at the top level, not a nested path. Leave empty for the default. Changing a path does not move existing notes."
+              >
+                <div className="space-y-6">
+                  {(
+                    [
+                      { key: "inbox" as const, label: "Inbox path", desc: "Main notes area." },
+                      { key: "quick" as const, label: "Quick Notes path", desc: "Quick-capture folder." },
+                      { key: "archive" as const, label: "Archive path", desc: "Cold-storage notes." },
+                      { key: "trash" as const, label: "Trash path", desc: "Deleted-note recovery." },
+                    ] as const
+                  ).map(({ key, label, desc }) => (
+                    <TextInputRow
+                      key={key}
+                      label={label}
+                      description={desc}
+                      value={vaultSettings.systemFolderPaths?.[key] ?? ""}
+                      placeholder={DEFAULT_FOLDER_PATHS[key]}
+                      settingId={`${key}-path`}
+                      commitOnBlur
+                      issue={folderPathIssues[key] ?? null}
+                      onChange={(next) => {
+                        const trimmed = (next ?? "").trim()
+                        // Say why, rather than saving nothing and letting the
+                        // field snap back to its old value. The normalizer on
+                        // the way in drops what it does not like, which is
+                        // right for a hand-edited file and silent for a person
+                        // typing (#533).
+                        const problem = describeSystemFolderPathIssue(
+                          key,
+                          trimmed,
+                          vaultSettings.systemFolderPaths,
+                        );
+                        setFolderPathIssues((current) => ({ ...current, [key]: problem }));
+                        if (problem) return;
+                        void persistVaultSettings({
+                          ...vaultSettings,
+                          systemFolderPaths: {
+                            ...vaultSettings.systemFolderPaths,
+                            [key]: trimmed || undefined,
+                          },
+                        });
+                      }}
+                    />
+                  ))}
+                  <InlineNote>
+                    Resolved paths:{" "}
+                    {(["inbox", "quick", "archive", "trash"] as const)
+                      .map((f) => resolveFolderPath(f, vaultSettings.systemFolderPaths))
+                      .join(", ")}
+                    .
+                  </InlineNote>
+                </div>
               </Section>
             </div>
           ),
@@ -4679,7 +5296,7 @@ function KeymapSettings({
           onSave={(binding) => {
             onSetBinding(
               recording.id,
-              binding === recording.defaultBinding ? null : binding,
+              binding === getDefaultKeymapBinding(recording.id) ? null : binding,
             );
             setRecording(null);
           }}
@@ -4805,7 +5422,7 @@ function KeymapRecorderModal({
           </div>
           <div className="mt-1 text-xs text-ink-500">
             Default:{" "}
-            {formatKeymapBinding(definition.defaultBinding, definition.kind)}
+            {formatKeymapBinding(getDefaultKeymapBinding(definition.id), definition.kind)}
           </div>
         </div>
         <div className="flex items-center justify-between gap-3 border-t border-paper-300/60 px-5 py-3">
@@ -5306,6 +5923,7 @@ function TextInputRow({
   placeholder,
   settingId,
   commitOnBlur = false,
+  issue,
   onChange,
 }: {
   label: string;
@@ -5314,6 +5932,9 @@ function TextInputRow({
   placeholder?: string;
   settingId?: string;
   commitOnBlur?: boolean;
+  /** Why the last value was refused. Shown under the description, in place of
+   *  the field quietly reverting and leaving the user to guess. */
+  issue?: string | null;
   onChange: (next: string | null) => void;
 }): JSX.Element {
   const [draft, setDraft] = useState(value);
@@ -5339,6 +5960,11 @@ function TextInputRow({
         {description && (
           <div className="mt-1 text-xs leading-5 text-ink-500">
             {description}
+          </div>
+        )}
+        {issue && (
+          <div className="mt-1 text-xs leading-5 text-[color:rgb(var(--z-red))]" role="alert">
+            {issue}
           </div>
         )}
       </div>
@@ -6143,6 +6769,170 @@ function KanbanStatusesRow({ settingId }: { settingId?: string }): JSX.Element {
         >
           Add status
         </button>
+      </div>
+    </div>
+  );
+}
+
+const NO_EXCLUDED_FOLDERS: string[] = [];
+
+/** Settings editor for the vault's `tasks.excludedFolders` list (#458). The
+ *  sidebar folder context menu ("Exclude from Tasks") is the primary way in;
+ *  this list is where entries are reviewed, removed, or typed by hand. Saved
+ *  to vault.json, so it travels with the vault and applies to every runtime. */
+function TasksExcludedFoldersRow({
+  settingId,
+}: {
+  settingId?: string;
+}): JSX.Element {
+  const excluded = useStore(
+    (s) => s.vaultSettings.tasks?.excludedFolders ?? NO_EXCLUDED_FOLDERS,
+  );
+  const toggleTasksExcludedFolder = useStore(
+    (s) => s.toggleTasksExcludedFolder,
+  );
+  const [draft, setDraft] = useState("");
+
+  const addDraft = (): void => {
+    const cleaned = normalizeTasksExcludedFolder(draft);
+    if (!cleaned || excluded.includes(cleaned)) return;
+    setDraft("");
+    void toggleTasksExcludedFolder(cleaned);
+  };
+
+  return (
+    <div className="px-5 py-4" {...settingsSearchTargetProps(settingId)}>
+      <div className="text-sm font-medium text-ink-900">
+        Folders excluded from Tasks
+      </div>
+      <div className="mt-1 text-xs leading-5 text-ink-500">
+        Notes in these folders never feed the Tasks list, boards, or calendars
+        (their checkboxes stay plain checkboxes). Right-click a folder in the
+        sidebar and choose “Exclude from Tasks”, or add its vault path here.
+        Saved in the vault itself, so the CLI, MCP, and the self-hosted server
+        respect it too.
+      </div>
+      <div className="mt-3 space-y-2">
+        {excluded.length === 0 && (
+          <div className="rounded-md border border-dashed border-paper-300 px-3 py-2 text-xs text-ink-500">
+            No folders excluded. Reading lists and media backlogs are the usual
+            candidates.
+          </div>
+        )}
+        {excluded.map((relDir) => (
+          <div key={relDir} className="flex items-center gap-2">
+            <div className="min-w-0 flex-1 truncate rounded-md border border-paper-300 bg-paper-100 px-2.5 py-1.5 font-mono text-xs text-ink-900">
+              {relDir}
+            </div>
+            <button
+              type="button"
+              onClick={() => void toggleTasksExcludedFolder(relDir)}
+              aria-label={`Include ${relDir} in Tasks again`}
+              className="rounded-md px-2 py-1 text-xs text-ink-500 hover:bg-rose-500/15 hover:text-rose-400"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addDraft();
+            }
+          }}
+          placeholder="Folder path, e.g. inbox/Books"
+          aria-label="Folder path to exclude from Tasks"
+          className="min-w-0 flex-1 rounded-md border border-paper-300 bg-paper-100 px-2.5 py-1.5 text-sm text-ink-900 outline-none focus:border-accent/60"
+        />
+        <button
+          type="button"
+          onClick={addDraft}
+          className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
+        >
+          Exclude folder
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Settings editor for the vault's `typstPreambles.folder` name (#562).
+ *  The folder does double duty: its notes are the Typst preambles, and they
+ *  are the notes every tag scanner skips, because `#let vec(x) = …` is a Typst
+ *  variable rather than a tag. Renaming it therefore moves both at once, which
+ *  is the way out for a vault that keeps ordinary tagged notes in a folder it
+ *  happens to have called `typst`. Saved to vault.json, so it travels with the
+ *  vault and applies on every runtime. */
+function TypstPreambleFolderRow({
+  settingId,
+}: {
+  settingId?: string;
+}): JSX.Element {
+  const stored = useStore((s) => s.vaultSettings.typstPreambles?.folder);
+  const setTypstPreambleFolder = useStore((s) => s.setTypstPreambleFolder);
+  const effective = resolveTypstPreambleFolder(stored);
+  const [draft, setDraft] = useState(effective);
+  // Someone else (another window, a hand edit of vault.json) can move the
+  // folder while this row is mounted; follow it rather than showing a stale
+  // name the user never typed.
+  useEffect(() => {
+    setDraft(effective);
+  }, [effective]);
+
+  const commit = (): void => {
+    const cleaned = normalizeTypstPreambleFolder(draft);
+    if (!cleaned) {
+      setDraft(effective);
+      return;
+    }
+    void setTypstPreambleFolder(cleaned);
+  };
+
+  return (
+    <div className="px-5 py-4" {...settingsSearchTargetProps(settingId)}>
+      <div className="text-sm font-medium text-ink-900">
+        Typst preamble folder
+      </div>
+      <div className="mt-1 text-xs leading-5 text-ink-500">
+        Notes in this folder are preambles, and their #tags are left out of the
+        tag list: a preamble is Typst source, where `#let` and `#var` are
+        variables rather than tags. Rename it if you keep ordinary tagged notes
+        in a folder called typst. Saved in the vault itself, so the CLI, MCP,
+        and the self-hosted server agree.
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setDraft(effective);
+            }
+          }}
+          onBlur={commit}
+          placeholder={TYPST_PREAMBLE_FOLDER}
+          aria-label="Typst preamble folder name"
+          className="min-w-0 flex-1 rounded-md border border-paper-300 bg-paper-100 px-2.5 py-1.5 font-mono text-sm text-ink-900 outline-none focus:border-accent/60"
+        />
+        {effective !== TYPST_PREAMBLE_FOLDER && (
+          <button
+            type="button"
+            onClick={() => void setTypstPreambleFolder(TYPST_PREAMBLE_FOLDER)}
+            className="shrink-0 rounded-md px-2 py-1 text-xs text-ink-500 hover:bg-paper-200"
+          >
+            Reset
+          </button>
+        )}
       </div>
     </div>
   );

@@ -1,7 +1,9 @@
+import { promises as fsPromises } from 'node:fs'
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { VaultSettings } from '@shared/ipc'
 import {
   absolutePath,
   appendToNote,
@@ -10,11 +12,13 @@ import {
   duplicateAsset,
   emptyDeletedAssets,
   ensureVaultLayout,
+  folderForRelativePath,
   forgetLocalVault,
   getVaultSettings,
   importFiles,
   importPastedImage,
   invalidateNoteMetaCache,
+  invalidateVaultSettingsCache,
   listDeletedAssets,
   listNotes,
   listFolders,
@@ -31,6 +35,7 @@ import {
   searchVaultTextCapabilities,
   setVaultSettings,
   unarchiveNote,
+  vaultChangeAffectsSettings,
   writeNote
 } from './vault'
 
@@ -97,6 +102,174 @@ describe('daily-notes task settings round-trip (#288)', () => {
     const settings = await getVaultSettings(root)
     expect(settings.dailyNotes.tasksDueOnNoteDate).toBe(true)
     expect(settings.dailyNotes.rolloverUnfinishedTasks).toBe(false)
+  })
+})
+
+describe('file-location settings round-trip (#446)', () => {
+  it('persists tasksLocation through set/get (drawings/databases already worked)', async () => {
+    const root = await makeTempDir('zennotes-vault-tasksloc-')
+    await mkdir(root, { recursive: true })
+    const base = await getVaultSettings(root)
+    // Before the fix the main process sanitizer dropped tasksLocation on save
+    // (drawings and databases were kept), so the Tasks-location control snapped
+    // back and every new task landed in the inbox regardless of the choice.
+    await setVaultSettings(root, {
+      ...base,
+      tasksLocation: { mode: 'folder', folder: 'Tasks' },
+      drawingsLocation: { mode: 'active-note' }
+    })
+    const saved = await getVaultSettings(root)
+    expect(saved.tasksLocation).toEqual({ mode: 'folder', folder: 'Tasks' })
+    expect(saved.drawingsLocation).toEqual({ mode: 'active-note' })
+  })
+
+  it('defaults tasksLocation to primary when unset', async () => {
+    const root = await makeTempDir('zennotes-vault-tasksloc-default-')
+    await mkdir(root, { recursive: true })
+    const settings = await getVaultSettings(root)
+    expect(settings.tasksLocation).toEqual({ mode: 'primary' })
+  })
+})
+
+describe('remapped system folders (#398)', () => {
+  it('creates the REMAPPED inbox on save, not a literal inbox/', async () => {
+    const root = await makeTempDir('zennotes-vault-remap-mkdir-')
+    await mkdir(root, { recursive: true })
+    const base = await getVaultSettings(root)
+    await setVaultSettings(root, {
+      ...base,
+      primaryNotesLocation: 'inbox',
+      systemFolderPaths: { inbox: '01 - Entry' }
+    })
+    expect((await stat(path.join(root, '01 - Entry'))).isDirectory()).toBe(true)
+    // The stray literal directory was the whole bug: it existed, classified as
+    // the system inbox, and every listing walked the remapped one instead.
+    await expect(stat(path.join(root, 'inbox'))).rejects.toThrow()
+  })
+
+  it('seeds the welcome note into the remapped inbox', async () => {
+    const root = await makeTempDir('zennotes-vault-remap-welcome-')
+    await mkdir(path.join(root, '.zennotes'), { recursive: true })
+    await writeFile(
+      path.join(root, '.zennotes', 'vault.json'),
+      JSON.stringify({ primaryNotesLocation: 'inbox', systemFolderPaths: { inbox: '01 - Entry' } })
+    )
+    await ensureVaultLayout(root)
+    expect((await stat(path.join(root, '01 - Entry', 'Welcome.md'))).isFile()).toBe(true)
+  })
+
+  it('classifies the remapped directory, and a leftover literal one as a user folder', async () => {
+    const settings = {
+      primaryNotesLocation: 'inbox',
+      systemFolderPaths: { archive: '99 - Archive' }
+    } as VaultSettings
+    expect(folderForRelativePath('99 - Archive/Old.md', settings)).toBe('archive')
+    // `archive/` is not the archive any more; it is an ordinary folder.
+    expect(folderForRelativePath('archive/Kept.md', settings)).toBe('inbox')
+    expect(folderForRelativePath('quick/Note.md', settings)).toBe('quick')
+    expect(folderForRelativePath('assets/pic.png', settings)).toBeNull()
+  })
+
+  it('classifies a swap by the resolved names, not the default ones', async () => {
+    // normalizeSystemFolderPaths rejects this now, but classification must not
+    // depend on that: whatever a folder resolves to is what it is.
+    const swapped = {
+      primaryNotesLocation: 'inbox',
+      systemFolderPaths: { inbox: 'archive', archive: 'inbox' }
+    } as VaultSettings
+    expect(folderForRelativePath('archive/A.md', swapped)).toBe('inbox')
+    expect(folderForRelativePath('inbox/B.md', swapped)).toBe('archive')
+  })
+})
+
+// getVaultSettings is awaited by folderOf() on every note read and write, and
+// its fallback is a whole-root readdir. A vault.json that states its
+// primaryNotesLocation answers the question by itself, so a cache hit (and
+// even a cold read of such a file) must not list the root at all.
+describe('vault settings readdir cost', () => {
+  it('performs no readdir on a cache hit', async () => {
+    const root = await makeTempDir('zennotes-vault-settings-readdir-')
+    await mkdir(root, { recursive: true })
+    const base = await getVaultSettings(root)
+    await setVaultSettings(root, { ...base, primaryNotesLocation: 'inbox' })
+    await getVaultSettings(root) // prime the cache
+
+    const spy = vi.spyOn(fsPromises, 'readdir')
+    try {
+      await getVaultSettings(root)
+      await getVaultSettings(root)
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('performs no readdir on a cold read of a vault.json that states its mode', async () => {
+    const root = await makeTempDir('zennotes-vault-settings-cold-')
+    await mkdir(path.join(root, '.zennotes'), { recursive: true })
+    await writeFile(
+      path.join(root, '.zennotes', 'vault.json'),
+      JSON.stringify({ primaryNotesLocation: 'root' })
+    )
+    invalidateVaultSettingsCache(root)
+
+    const spy = vi.spyOn(fsPromises, 'readdir')
+    try {
+      expect((await getVaultSettings(root)).primaryNotesLocation).toBe('root')
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('still infers when vault.json leaves the mode unstated', async () => {
+    const root = await makeTempDir('zennotes-vault-settings-infer-')
+    await mkdir(path.join(root, '.zennotes'), { recursive: true })
+    await mkdir(path.join(root, 'concepts'), { recursive: true })
+    await writeFile(path.join(root, '.zennotes', 'vault.json'), JSON.stringify({}))
+    invalidateVaultSettingsCache(root)
+    expect((await getVaultSettings(root)).primaryNotesLocation).toBe('root')
+  })
+})
+
+describe('vaultChangeAffectsSettings', () => {
+  it('is true for vault.json and for root-level entries the inference reads', () => {
+    expect(
+      vaultChangeAffectsSettings({
+        kind: 'change',
+        path: '.zennotes/vault.json',
+        folder: 'inbox',
+        scope: 'vault-settings'
+      })
+    ).toBe(true)
+    expect(vaultChangeAffectsSettings({ kind: 'add', path: 'Notes.md', folder: 'inbox' })).toBe(
+      true
+    )
+    expect(
+      vaultChangeAffectsSettings({ kind: 'add', path: 'concepts', folder: 'inbox', scope: 'folder' })
+    ).toBe(true)
+  })
+
+  it('is false for the nested writes a save burst is made of', () => {
+    expect(
+      vaultChangeAffectsSettings({ kind: 'change', path: 'inbox/Deep/Note.md', folder: 'inbox' })
+    ).toBe(false)
+    expect(
+      vaultChangeAffectsSettings({
+        kind: 'change',
+        path: 'inbox/Books.base/data.csv',
+        folder: 'inbox',
+        scope: 'database'
+      })
+    ).toBe(false)
+    expect(
+      vaultChangeAffectsSettings({
+        kind: 'change',
+        path: 'inbox/Note.md',
+        folder: 'inbox',
+        scope: 'comments'
+      })
+    ).toBe(false)
   })
 })
 
@@ -598,6 +771,32 @@ describe('listNotes metadata parsing', () => {
     expect(note?.tags).toEqual(['realtag'])
   })
 
+  it('indexes frontmatter tags as first-class note tags', async () => {
+    const root = await makeTempDir('zennotes-meta-frontmatter-tags-')
+    await ensureVaultLayout(root)
+    const rel = 'inbox/frontmatter.md'
+    await writeFile(
+      path.join(root, rel),
+      '---\ntags: [frontmatter, "#quoted", project/nested]\ntitle: #ignored\n---\n\n#inline\n',
+      'utf8'
+    )
+
+    const notes = await listNotes(root)
+    const note = notes.find((n) => n.path === rel)
+    expect(note?.tags).toEqual(['frontmatter', 'quoted', 'project/nested', 'inline'])
+  })
+
+  it('indexes block-list frontmatter tags', async () => {
+    const root = await makeTempDir('zennotes-meta-frontmatter-tag-list-')
+    await ensureVaultLayout(root)
+    const rel = 'inbox/frontmatter-list.md'
+    await writeFile(path.join(root, rel), '---\ntags:\n  - daily\n  - "#log"\n---\n\nBody\n', 'utf8')
+
+    const notes = await listNotes(root)
+    const note = notes.find((n) => n.path === rel)
+    expect(note?.tags).toEqual(['daily', 'log'])
+  })
+
   it('detects only local asset references as attachments', async () => {
     const root = await makeTempDir('zennotes-meta-assets-')
     await ensureVaultLayout(root)
@@ -707,7 +906,10 @@ describe('listNotes metadata cache', () => {
     await writeFile(
       path.join(root, '.zennotes', 'note-meta-cache-v1.json'),
       `${JSON.stringify({
-        version: 2,
+        version: 3,
+        // The folder the snapshot was built under (#562). A snapshot without
+        // it predates the preamble exclusion, so its tags cannot be trusted.
+        preambleFolder: 'typst',
         entries: [
           {
             path: rel,
@@ -741,6 +943,60 @@ describe('listNotes metadata cache', () => {
     expect(note?.title).toBe('Cached Title')
     expect(note?.tags).toEqual(['cached'])
     expect(note?.excerpt).toBe('cached excerpt')
+  })
+
+  // #562: a note's tags depend on which folder holds Typst preambles, so a
+  // snapshot built under a different folder (or by a build that had no such
+  // concept) describes tags this vault no longer believes in. Discarding it is
+  // the upgrade path: without this, existing vaults would keep serving their
+  // polluted `#let` tags out of disk cache until every file changed.
+  it('discards persisted metadata built under a different preamble folder', async () => {
+    const root = await makeTempDir('zennotes-meta-cache-preamble-')
+    await ensureVaultLayout(root)
+    const rel = 'inbox/typst/physics.md'
+    const abs = path.join(root, rel)
+    await mkdir(path.dirname(abs), { recursive: true })
+    await writeFile(abs, '#let vec(x) = bold(x)\n', 'utf8')
+    const info = await stat(abs)
+    await mkdir(path.join(root, '.zennotes'), { recursive: true })
+    await writeFile(
+      path.join(root, '.zennotes', 'note-meta-cache-v1.json'),
+      `${JSON.stringify({
+        version: 3,
+        preambleFolder: 'SomethingElse',
+        entries: [
+          {
+            path: rel,
+            mtimeMs: info.mtimeMs,
+            size: info.size,
+            meta: {
+              path: rel,
+              title: 'physics',
+              folder: 'inbox',
+              siblingOrder: 0,
+              createdAt: info.birthtimeMs || info.ctimeMs,
+              updatedAt: info.mtimeMs,
+              size: info.size,
+              tags: ['let'],
+              wikilinks: [],
+              assetEmbeds: [],
+              hasAttachments: false,
+              excerpt: 'stale'
+            }
+          }
+        ]
+      })}\n`,
+      'utf8'
+    )
+
+    invalidateNoteMetaCache(root)
+
+    const notes = await listNotes(root)
+    const note = notes.find((item) => item.path === rel)
+    // Re-derived against THIS vault's folder (`typst`), so the preamble
+    // contributes nothing rather than the cached `let`.
+    expect(note?.tags).toEqual([])
+    expect(note?.excerpt).not.toBe('stale')
   })
 
   it('ignores stale persisted metadata when file stats no longer match', async () => {

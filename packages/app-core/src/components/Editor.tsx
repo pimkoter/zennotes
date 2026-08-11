@@ -30,10 +30,12 @@ import { externalLinkUrl, extractLinkAtCursor, resolveInternalNoteHref } from '.
 import {
   buildMoveNotePrompt,
   parseMoveNoteTarget,
+  parseTemplateDestination,
   validateMoveNoteTarget
 } from '../lib/move-note'
 import { promptApp } from '../lib/prompt-requests'
 import { offerCreateNoteFromLink } from '../lib/create-note-from-link'
+import { externalFileLink, openExternalFileLink } from '../lib/external-file-link'
 import { StatusBar } from './StatusBar'
 import { EditorPane } from './EditorPane'
 import { focusPaneInDirection, focusPaneOrEdgePanel } from '../lib/pane-nav'
@@ -44,11 +46,12 @@ import {
   type KeymapId,
   type KeymapOverrides
 } from '../lib/keymaps'
-import { navigateActiveBuffer } from '../lib/buffer-navigation'
+import { navigateActiveBuffer, selectActiveBuffer } from '../lib/buffer-navigation'
 import { applyVimInsertEscape } from '../lib/vim-insert-escape'
 import { listContinuationPrefix } from '../lib/list-continuation'
 import { focusEditorNormalMode } from '../lib/editor-focus'
 import { toVimSequence } from '../lib/vim-key-sequence'
+import { registerNoteMoveExCommands } from '../lib/vim-ex-commands'
 
 let vimCommandsRegistered = false
 let syncedVimBindings: Partial<Record<KeymapId, string[]>> = {}
@@ -413,6 +416,25 @@ function registerVimCommands(): void {
     void useStore.getState().openTasksView()
   })
 
+  // Quick-add a whole-note task file. `:newtask` (or `:task`) prompts for a
+  // title and creates it at the configured tasks location; `:newtask <folder>`
+  // targets a specific folder so per-project tasks stay organized (e.g.
+  // `:newtask Projects/Website`). Short name `newt` is a prefix of `newtask`.
+  const runNewTaskEx = (
+    _cm: unknown,
+    params: { argString?: string } | undefined
+  ): void => {
+    const arg = (params?.argString ?? '').trim()
+    if (!arg) {
+      void useStore.getState().newTaskFile()
+      return
+    }
+    const dest = parseTemplateDestination(arg)
+    void useStore.getState().newTaskFile({ folder: dest.folder, subpath: dest.subpath })
+  }
+  Vim.defineEx('newtask', 'newt', runNewTaskEx)
+  Vim.defineEx('task', 'task', runNewTaskEx)
+
   // `:template` / `:tmpl` opens the template picker. `:template <name>` skips
   // the picker and creates directly from the best name/id match. CM-Vim
   // requires a short name to be a prefix of the full name, so `tmpl` (not a
@@ -587,6 +609,12 @@ function registerVimCommands(): void {
       return
     }
 
+    // A link to a file outside the vault: open it with the OS default app. (#424)
+    if (externalFileLink(target)) {
+      void openExternalFileLink(target)
+      return
+    }
+
     // Dead link — confirm, then create the note (shared with the cmd-click path).
     void offerCreateNoteFromLink(target)
   })
@@ -605,12 +633,26 @@ function registerVimCommands(): void {
   Vim.defineAction('focusPaneRight', () => {
     focusPaneOrEdgePanel('l')
   })
-  Vim.defineAction('previousBuffer', () => {
-    navigateActiveBuffer(useStore.getState(), -1)
-  })
-  Vim.defineAction('nextBuffer', () => {
-    navigateActiveBuffer(useStore.getState(), 1)
-  })
+  // {count}gt goes straight to tab {count}, vim's absolute jump; without a
+  // count it keeps cycling. {count}gT is relative, vim-style: count tabs
+  // back. (#497)
+  Vim.defineAction(
+    'previousBuffer',
+    (_cm: unknown, actionArgs?: { repeat?: number; repeatIsExplicit?: boolean }) => {
+      const repeat = actionArgs?.repeatIsExplicit ? actionArgs.repeat ?? 1 : 1
+      navigateActiveBuffer(useStore.getState(), -repeat)
+    }
+  )
+  Vim.defineAction(
+    'nextBuffer',
+    (_cm: unknown, actionArgs?: { repeat?: number; repeatIsExplicit?: boolean }) => {
+      if (actionArgs?.repeatIsExplicit && actionArgs.repeat) {
+        selectActiveBuffer(useStore.getState(), actionArgs.repeat)
+        return
+      }
+      navigateActiveBuffer(useStore.getState(), 1)
+    }
+  )
 
   registerVimNoteCommands()
   registerCommandPaletteEx()
@@ -723,8 +765,7 @@ function registerVimNoteCommands(): void {
     void moveActiveNote(params?.argString ?? '')
   }
 
-  Vim.defineEx('move', 'move', runMoveEx)
-  Vim.defineEx('mv', 'mv', runMoveEx)
+  registerNoteMoveExCommands(runMoveEx as Parameters<typeof registerNoteMoveExCommands>[0])
 
   Vim.defineEx('bnext', 'bn', () => navigateActiveBuffer(useStore.getState(), 1))
   Vim.defineEx('bprev', 'bp', () => navigateActiveBuffer(useStore.getState(), -1))
@@ -823,10 +864,15 @@ function registerVimNoteCommands(): void {
   }
   Vim.defineEx('qall', 'qa', closeEveryTab)
   Vim.defineEx('quitall', 'quitall', closeEveryTab)
-  // :xa / :wa are just aliases for qall in this context (nothing to flush
-  // that autosave doesn't already handle).
+  // Quit-and-write variants close everything, like vim's :xa / :wqa. But
+  // :wa is a SAVE, not a quit: it used to alias qall here on the theory
+  // that autosave leaves nothing to flush, and every vim user's muscle
+  // memory (":wa after any change") nuked their tab layout instead (#569).
   Vim.defineEx('xall', 'xa', closeEveryTab)
-  Vim.defineEx('wall', 'wa', closeEveryTab)
+  Vim.defineEx('wqall', 'wqa', closeEveryTab)
+  Vim.defineEx('wall', 'wa', () => {
+    void useStore.getState().flushDirtyNotes()
+  })
 
   Vim.defineEx('help', 'h', () => {
     void useStore.getState().openHelpView()
@@ -937,6 +983,8 @@ const MANUAL_EX_NAMES = new Set([
   'quitall',
   'xall',
   'xa',
+  'wqall',
+  'wqa',
   'wall',
   'wa',
   'help',

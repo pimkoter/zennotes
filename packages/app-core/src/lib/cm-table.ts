@@ -28,6 +28,7 @@ import {
   WidgetType
 } from '@codemirror/view'
 import {
+  escapeCell,
   insertColumn,
   insertRow,
   moveColumn,
@@ -46,6 +47,16 @@ import { getCM } from '@replit/codemirror-vim'
 import { undo, redo } from '@codemirror/commands'
 import { useStore } from '../store'
 import { matchesSequenceToken } from './keymaps'
+import { followLinkTarget } from './follow-link'
+import { extractLinkAtCursor } from './internal-links'
+
+/** The follow target for a rendered link anchor inside a table cell: a
+ *  wikilink's name (`data-wikilink`) or a plain link's href. Returns null for
+ *  anchors that carry neither. */
+function linkTargetFromAnchor(anchor: HTMLAnchorElement): string | null {
+  if (anchor.classList.contains('wikilink')) return anchor.dataset.wikilink?.trim() || null
+  return anchor.getAttribute('href')?.trim() || null
+}
 
 /** True when the editor is in Vim mode — gates the table's modal (normal /
  *  insert) keyboard navigation. With Vim off, cells stay plain contenteditable
@@ -59,15 +70,37 @@ function vimEnabled(): boolean {
  *  Vim's default `timeoutlen`. (#341) */
 const INSERT_ESCAPE_TIMEOUT_MS = 1000
 
-/** Render a cell's markdown source to inline HTML (sanitized by the markdown
- *  pipeline). Strips the wrapping `<p>` so the content sits inline in the cell.
- *  Empty cells render nothing. */
-function renderInlineCell(text: string): string {
+/**
+ * Render a cell's markdown source to inline HTML (sanitized by the markdown
+ * pipeline). Empty cells render nothing.
+ *
+ * The text goes through the parser AS A TABLE CELL, because that is the only
+ * thing it is: GFM gives cells inline content, never blocks. Handing the bare
+ * text to the block pipeline meant a cell holding just `-` or `+` parsed as a
+ * bullet-list marker and rendered an empty `<li>`, so the character vanished
+ * from the widget while Preview, which parses the real table, showed it fine.
+ * `#`, `1.`, `---` and `> q` were lost or mangled the same way. (#559)
+ *
+ * Round-tripping through a one-cell table keeps the widget on the exact same
+ * parser as the reading view rather than adding an inline-only copy to keep in
+ * sync, and `escapeCell` is the serializer's own escaping, so what the cell
+ * shows is what its row will contain on disk.
+ */
+export function renderInlineCell(text: string): string {
   const trimmed = text.trim()
   if (!trimmed) return ''
-  const html = renderMarkdown(trimmed).trim()
-  const match = html.match(/^<p[^>]*>([\s\S]*?)<\/p>\s*$/)
-  return match ? match[1] : html
+  // A newline would close the synthetic row; cells are single-line by
+  // construction, but contenteditable can hand one back after a paste.
+  const source = escapeCell(trimmed.replace(/\s*\n\s*/g, ' '))
+  const parsed = document.createElement('template')
+  parsed.innerHTML = renderMarkdown(`| ${source} |\n| --- |`)
+  const cell = parsed.content.querySelector('th, td')
+  // Never swallow the text: if the pipeline returns something unexpected (its
+  // error fallback, say), show the source rather than an empty cell.
+  if (cell) return cell.innerHTML
+  const plain = document.createElement('span')
+  plain.textContent = trimmed
+  return plain.innerHTML
 }
 
 /** If a `<!-- zen:cols=… -->` width marker sits on the line right after the
@@ -85,6 +118,32 @@ function colWidthsAfter(
   return widths ? { widths, to: next.to } : null
 }
 
+/**
+ * The table block containing `pos`, found by reading the document rather than
+ * the syntax tree: the run of `|` rows around that line, plus a trailing
+ * `zen:cols` marker.
+ *
+ * Backs up `tableRangeAt`. Markdown parsing is incremental, so a table that was
+ * just created or restructured can still be outside the parsed tree when the
+ * next action commits — and a commit that can't find its range throws the
+ * user's edit away without a word. Reported as an alignment that only takes
+ * effect the second time you choose it. (#485)
+ */
+export function tableBlockAt(doc: Text, pos: number): { from: number; to: number } | null {
+  const isRow = (text: string): boolean => text.trimStart().startsWith('|')
+  const line = doc.lineAt(Math.max(0, Math.min(pos, doc.length)))
+  if (!isRow(line.text)) return null
+  let first = line.number
+  while (first > 1 && isRow(doc.line(first - 1).text)) first--
+  let last = line.number
+  while (last < doc.lines && isRow(doc.line(last + 1).text)) last++
+  // A table is at least a header and its delimiter row; one `|` line on its own
+  // is prose, and rewriting it as a table would be a worse failure than none.
+  if (last - first < 1) return null
+  const ext = colWidthsAfter(doc, doc.line(last).to)
+  return { from: doc.line(first).from, to: ext ? ext.to : doc.line(last).to }
+}
+
 /** Find the enclosing `Table` node range for a doc position, or null. The range
  *  is extended over a trailing `zen:cols` width marker so re-serialization
  *  replaces both (no duplicate markers, no leaked raw comment). */
@@ -98,23 +157,46 @@ function tableRangeAt(view: EditorView, pos: number): { from: number; to: number
     if (!node.parent) break
     node = node.parent
   }
-  return null
+  return tableBlockAt(view.state.doc, pos)
 }
 
 /**
  * Re-serialize `table` and write it over whichever Table node currently sits
  * under the widget's DOM. Resolving the range live (via posAtDOM) keeps the
  * write correct even when edits elsewhere have shifted the document.
+ *
+ * `anchor` is the table's document position captured when the caller still
+ * had a live widget (the context menu records it at open). Any doc change
+ * while the menu is up (most commonly the dirty-cell commit that opening
+ * the menu itself triggers via focusout) rebuilds the decorations and
+ * detaches this widget's DOM, so posAtDOM can no longer answer. The anchor
+ * re-resolves the table from the CURRENT document instead (its start does
+ * not move: those mid-menu edits land inside or after the block), so the
+ * user's action still lands. Third and hopefully final act of #485.
  */
-function commitTable(view: EditorView, dom: HTMLElement, table: MarkdownTable): void {
-  let pos: number
-  try {
-    pos = view.posAtDOM(dom)
-  } catch {
+function commitTable(
+  view: EditorView,
+  dom: HTMLElement | null,
+  table: MarkdownTable,
+  anchor?: number
+): void {
+  let range: { from: number; to: number } | null = null
+  if (dom && dom.isConnected) {
+    try {
+      range = tableRangeAt(view, view.posAtDOM(dom))
+    } catch {
+      range = null
+    }
+  }
+  if (!range && anchor != null) {
+    range = tableBlockAt(view.state.doc, anchor)
+  }
+  if (!range) {
+    // Never silently discard a user's edit again: every earlier act of #485
+    // hid behind a bare return on this path.
+    console.warn('[zen:table] commit dropped: could not locate the table block')
     return
   }
-  const range = tableRangeAt(view, pos)
-  if (!range) return
   const next = serializeTable(table)
   if (next === view.state.sliceDoc(range.from, range.to)) return
   view.dispatch({
@@ -153,6 +235,14 @@ class TableWidget extends WidgetType {
    *  reach this contenteditable widget, so it is honored here directly. (#341) */
   private insertEscapeKeys: { ch: string; at: number }[] = []
   private pendingScope: 'i' | 'a' | null = null
+  /** Armed after `f`/`F`/`t`/`T`, waiting for the target character (#435). */
+  private pendingFind: 'f' | 'F' | 't' | 'T' | null = null
+  /** Armed after `r`, waiting for the replacement character (#435). */
+  private pendingReplace = false
+  /** Armed after `g`, waiting for the second key (`gd` follows a link) (#445). */
+  private pendingG = false
+  /** Last `f`/`t` find, so `;`/`,` can repeat it. */
+  private lastFind: { cmd: 'f' | 'F' | 't' | 'T'; ch: string } | null = null
   /** Set in toDOM — CodeMirror hands the live view there. Block widgets are
    *  provided by a StateField, which has no view at build time. */
   private view!: EditorView
@@ -175,14 +265,27 @@ class TableWidget extends WidgetType {
    *  The dispatch rebuilds the decorations (a fresh widget), so we refocus the
    *  requested cell on the next frame. Used by the context menu, which has
    *  already computed `next` from the current model. */
-  private applyModel(next: MarkdownTable, focus?: CellAddress): void {
+  private applyModel(next: MarkdownTable, focus?: CellAddress, anchor?: number): void {
     // Capture the live range BEFORE the dispatch detaches our DOM.
-    const dom = this.dom as HTMLElement
+    const dom = this.dom
     this.model = next
     this.dirty = false
-    commitTable(this.view, dom, next)
+    commitTable(this.view, dom, next, anchor)
     if (focus) {
       requestAnimationFrame(() => this.focusCellAt(focus))
+    }
+  }
+
+  /** Apply a context-menu action, then keep keyboard focus usable. Actions with
+   *  a target cell (insert/move/duplicate/align) focus it via `applyModel`;
+   *  actions without one (delete row/column, sort) would otherwise drop focus to
+   *  the body, so return it to the editor once the widget has re-rendered. (#437)
+   *  `anchor` (captured at menu open) lets the commit land even when this
+   *  widget instance was rebuilt while the menu was up (#485). */
+  private applyMenuAction(next: MarkdownTable, focus?: CellAddress, anchor?: number): void {
+    this.applyModel(next, focus, anchor)
+    if (!focus) {
+      requestAnimationFrame(() => this.view.focus())
     }
   }
 
@@ -195,6 +298,20 @@ class TableWidget extends WidgetType {
   ): void {
     this.syncFromDom()
     this.applyModel(fn(this.model), focus)
+  }
+
+  /** The table's current document position, captured while this widget is
+   *  still live. A context menu outlives the widget instance that opened it:
+   *  the focus moving into the menu commits any dirty cell, that dispatch
+   *  rebuilds the decorations and detaches this DOM, and a later menu action
+   *  would then have nothing to resolve its commit against. The anchor lets
+   *  commitTable re-find the table in the current document instead (#485). */
+  private captureTableAnchor(): number | undefined {
+    try {
+      return this.dom && this.dom.isConnected ? this.view.posAtDOM(this.dom) : undefined
+    } catch {
+      return undefined
+    }
   }
 
   private focusCellAt(addr: CellAddress): void {
@@ -422,6 +539,7 @@ class TableWidget extends WidgetType {
         this.cellMode = 'normal'
         this.pendingOp = null
         this.pendingScope = null
+        this.pendingG = false
         this.visualMode = false
         this.visualScope = null
         const len = (editable.dataset.raw ?? '').length
@@ -438,6 +556,22 @@ class TableWidget extends WidgetType {
         editable.dataset.rendered = 'false'
         placeCaretEnd(editable)
       }
+    })
+    // Follow a rendered link (wikilink or Markdown link) inside the cell instead
+    // of dropping the caret into the raw source. Mirrors the main editor, where a
+    // rendered link follows on plain click and Cmd/Ctrl-click always follows —
+    // caught on mousedown (before focus reveals the source), so it works in both
+    // Vim and non-Vim mode. Only fires while the cell shows its anchors. (#445)
+    editable.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return
+      if (editable.dataset.rendered !== 'true') return
+      const anchor = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>('a')
+      if (!anchor || !editable.contains(anchor)) return
+      const target = linkTargetFromAnchor(anchor)
+      if (!target) return
+      event.preventDefault()
+      event.stopPropagation()
+      followLinkTarget(target)
     })
     editable.addEventListener('input', () => {
       this.dirty = true
@@ -462,13 +596,14 @@ class TableWidget extends WidgetType {
       // Pull pending edits into the model (no dispatch) so the menu acts on
       // the current contents; the chosen action commits in one write.
       this.syncFromDom()
+      const anchor = this.captureTableAnchor()
       openTableContextMenu({
         x: event.clientX,
         y: event.clientY,
         row,
         col,
         model: this.model,
-        apply: (next, focus) => this.applyModel(next, focus)
+        apply: (next, focus) => this.applyMenuAction(next, focus, anchor)
       })
     })
     cell.append(editable)
@@ -679,6 +814,40 @@ class TableWidget extends WidgetType {
           this.applyOperator(editable, op, event.key, cellText)
           return
         }
+        if (this.pendingReplace) {
+          // `r<char>`: replace the char under the cursor. Esc / non-printable
+          // cancels without changing anything.
+          event.preventDefault()
+          this.pendingReplace = false
+          if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+            this.replaceChar(editable, event.key)
+          }
+          return
+        }
+        if (this.pendingFind) {
+          // Second key of `f`/`F`/`t`/`T`: the target char. Esc / non-printable
+          // cancels.
+          event.preventDefault()
+          const cmd = this.pendingFind
+          this.pendingFind = null
+          if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+            this.lastFind = { cmd, ch: event.key }
+            this.applyFind(editable, cmd, event.key, cellText, false)
+          }
+          return
+        }
+        if (this.pendingG) {
+          // Second key of `g`: `gd` follows the link under the cursor, matching
+          // the editor's go-to-definition motion. Anything else cancels (there's
+          // no `gg` in a single-line cell). (#445)
+          event.preventDefault()
+          this.pendingG = false
+          if (event.key === 'd') {
+            const target = extractLinkAtCursor(cellText, this.cursorOffset)
+            if (target) followLinkTarget(target)
+          }
+          return
+        }
         // Directional cell navigation. Honors the configurable nav keymaps
         // (defaults h/l/j/k) so non-QWERTY layouts can remap them (#213), and
         // arrow keys always work (#232). Only plain navigation is remappable —
@@ -739,6 +908,29 @@ class TableWidget extends WidgetType {
             this.cursorOffset = prevWordStart(cellText, this.cursorOffset)
             this.renderCellCursor(editable)
             return
+          case 'f':
+          case 'F':
+          case 't':
+          case 'T':
+            // Arm find-char; the next key is the target (#435).
+            event.preventDefault()
+            this.pendingFind = event.key as 'f' | 'F' | 't' | 'T'
+            return
+          case ';':
+            event.preventDefault()
+            if (this.lastFind) {
+              this.applyFind(editable, this.lastFind.cmd, this.lastFind.ch, cellText, true)
+            }
+            return
+          case ',': {
+            event.preventDefault()
+            if (this.lastFind) {
+              // Repeat the last find in the opposite direction.
+              const rev = { f: 'F', F: 'f', t: 'T', T: 't' } as const
+              this.applyFind(editable, rev[this.lastFind.cmd], this.lastFind.ch, cellText, true)
+            }
+            return
+          }
           case '0':
             event.preventDefault()
             this.cursorOffset = 0
@@ -764,6 +956,11 @@ class TableWidget extends WidgetType {
             this.enterInsertMode(editable, at)
             return
           }
+          case 'g':
+            // Arm `g`; the next key completes it (`gd` follows a link) (#445).
+            event.preventDefault()
+            this.pendingG = true
+            return
           case 'd':
             event.preventDefault()
             this.pendingOp = 'd'
@@ -787,14 +984,17 @@ class TableWidget extends WidgetType {
             this.view.focus()
             return
           case 'r':
-            // Ctrl-r → redo. Plain `r` is swallowed (no replace-char yet).
             event.preventDefault()
             if (event.ctrlKey) {
+              // Ctrl-r → redo.
               event.stopPropagation()
               this.commitIfDirty()
               redo(this.view)
               this.view.focus()
+              return
             }
+            // Plain `r`: arm replace-next-char (#435).
+            this.pendingReplace = true
             return
           case 'Escape':
             // Vim: Esc in normal mode is a no-op — don't jump out of the table.
@@ -1008,6 +1208,8 @@ class TableWidget extends WidgetType {
     this.insertEscapeKeys = []
     this.pendingOp = null
     this.pendingScope = null
+    this.pendingFind = null
+    this.pendingReplace = false
     this.visualMode = false
     this.visualScope = null
     this.clearCellCursor(cell)
@@ -1051,6 +1253,37 @@ class TableWidget extends WidgetType {
     cell.dataset.raw = next
     this.dirty = true
     this.cursorOffset = Math.max(0, Math.min(a, next.length - 1))
+    cell.textContent = next
+    cell.dataset.rendered = 'false'
+    this.renderCellCursor(cell)
+  }
+
+  /** Move the block cursor to `ch` per an `f`/`F`/`t`/`T` motion. `isRepeat`
+   *  (from `;`/`,`) nudges a till-motion past the char it's parked before so it
+   *  advances instead of getting stuck. No-op when the char isn't found. (#435) */
+  private applyFind(
+    cell: HTMLElement,
+    cmd: 'f' | 'F' | 't' | 'T',
+    ch: string,
+    text: string,
+    isRepeat: boolean
+  ): void {
+    const dir = cmd === 'f' || cmd === 't' ? 1 : -1
+    const till = cmd === 't' || cmd === 'T'
+    const from = isRepeat && till ? this.cursorOffset + dir : this.cursorOffset
+    const target = findChar(text, from, ch, dir, till)
+    if (target === null) return
+    this.cursorOffset = target
+    this.renderCellCursor(cell)
+  }
+
+  /** `r<char>`: replace the character under the block cursor. (#435) */
+  private replaceChar(cell: HTMLElement, ch: string): void {
+    const text = cell.dataset.raw ?? ''
+    if (this.cursorOffset >= text.length) return
+    const next = text.slice(0, this.cursorOffset) + ch + text.slice(this.cursorOffset + 1)
+    cell.dataset.raw = next
+    this.dirty = true
     cell.textContent = next
     cell.dataset.rendered = 'false'
     this.renderCellCursor(cell)
@@ -1258,6 +1491,7 @@ class TableWidget extends WidgetType {
    *  anchored at the cell. The menu itself is keyboard-navigable. */
   private openCellMenu(editable: HTMLElement, row: number, col: number): void {
     this.syncFromDom()
+    const anchor = this.captureTableAnchor()
     const rect = editable.getBoundingClientRect()
     openTableContextMenu({
       x: rect.left,
@@ -1265,7 +1499,7 @@ class TableWidget extends WidgetType {
       row,
       col,
       model: this.model,
-      apply: (next, focus) => this.applyModel(next, focus)
+      apply: (next, focus) => this.applyMenuAction(next, focus, anchor)
     })
   }
 
@@ -1316,6 +1550,29 @@ export function prevWordStart(text: string, off: number): number {
   const cls = charClass(text[i])
   while (i > 0 && charClass(text[i - 1]) === cls) i--
   return Math.max(0, i)
+}
+
+/** Vim `f`/`t`/`F`/`T`: index of `ch` searching from `off` in `dir` (+1 forward,
+ *  -1 back), or null if not found. `till` (t/T) stops one char short of the
+ *  target. The search always starts one char past `off`. (#435) */
+export function findChar(
+  text: string,
+  off: number,
+  ch: string,
+  dir: 1 | -1,
+  till: boolean
+): number | null {
+  const n = text.length
+  if (dir === 1) {
+    for (let i = off + 1; i < n; i++) {
+      if (text[i] === ch) return till ? i - 1 : i
+    }
+  } else {
+    for (let i = off - 1; i >= 0; i--) {
+      if (text[i] === ch) return till ? i + 1 : i
+    }
+  }
+  return null
 }
 
 /** Vim `e`: index of the end of the current/next word. */

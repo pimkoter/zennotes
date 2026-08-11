@@ -1,5 +1,11 @@
 import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
-import { useStore, initConfigSync, initCustomThemes, initOverrides } from './store'
+import {
+  useStore,
+  initConfigSync,
+  initCustomThemes,
+  initCustomCodeLanguages,
+  initOverrides
+} from './store'
 import { resolveAuto, findTheme } from './lib/themes'
 import {
   injectActiveTheme,
@@ -18,13 +24,31 @@ import { ServerDirectoryPickerHost } from './components/ServerDirectoryPickerHos
 import { ToastHost } from './components/ui'
 import { ExcalidrawEmbedMenuHost } from './components/ExcalidrawEmbedMenuHost'
 import { resolveQuickNoteTitle } from './lib/quick-note-title'
-import { isMacPlatform, matchesShortcut, matchesSequenceToken } from './lib/keymaps'
+import {
+  eventMatchesUserOverride,
+  isMacPlatform,
+  matchesShortcut,
+  matchesSequenceToken,
+  TAB_SELECT_KEYMAP_IDS
+} from './lib/keymaps'
+import { selectActiveBuffer } from './lib/buffer-navigation'
 import { focusPaneOrEdgePanel } from './lib/pane-nav'
+import {
+  activatePanelRow,
+  isRowPanel,
+  moveCommentCursor,
+  movePanelCursor,
+  type CursorMove
+} from './lib/panel-rows'
 import { requestPaneMode } from './lib/pane-mode'
 import { recordRendererPerf } from './lib/perf'
 import { focusEditorNormalMode } from './lib/editor-focus'
 import { isAppOverlayOpen } from './lib/overlay-open'
 import { installMarkdownFileDropHandler } from './lib/markdown-file-drop'
+import {
+  setMarkdownLooseMathDelimiters,
+  setMarkdownMathRenderer
+} from './lib/markdown-settings'
 import {
   appUpdateNoticeLabel,
   appUpdatePrimaryActionLabel,
@@ -243,6 +267,56 @@ function AppUpdateNotice({
   )
 }
 
+/**
+ * Keyboard handling inside a focused panel when Vim mode is off.
+ *
+ * VimNav owns panel keys, but its listener only exists in Vim mode — so without
+ * it, pane navigation could hand focus to a panel with no way to move inside it.
+ * This covers the keys that are universal everywhere else in the app: ↑/↓ move
+ * the row cursor, Home/End jump to the ends, Enter activates the row, Escape (or
+ * ←) hands focus back to the editor. Single-letter motions stay Vim-only.
+ *
+ * Returns nothing; the event is consumed only when a panel actually handled it,
+ * so unrelated keys still reach the app.
+ */
+function handlePanelKeyWithoutVim(e: KeyboardEvent, focusedPanel: string | null): void {
+  if (e.metaKey || e.ctrlKey || e.altKey) return
+  // Text entry inside a panel (the outline filter, a comment draft) keeps its keys.
+  const target = e.target instanceof HTMLElement ? e.target : null
+  if (target) {
+    const tag = target.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return
+  }
+  const isComments = focusedPanel === 'comments'
+  if (!isComments && !isRowPanel(focusedPanel)) return
+
+  const move: CursorMove | null =
+    e.key === 'ArrowDown' ? 'down' : e.key === 'ArrowUp' ? 'up' : e.key === 'Home' ? 'first' : e.key === 'End' ? 'last' : null
+
+  const consume = (): void => {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }
+
+  if (move) {
+    const moved = isComments ? moveCommentCursor(move) : movePanelCursor(focusedPanel, move)
+    if (moved) consume()
+    return
+  }
+  if (e.key === 'Enter') {
+    // The comments panel has no single "open" action per card, so Enter is left
+    // to the card's own focused control there.
+    if (isComments) return
+    if (activatePanelRow(focusedPanel)) consume()
+    return
+  }
+  if (e.key === 'Escape' || e.key === 'ArrowLeft') {
+    consume()
+    useStore.getState().setFocusedPanel('editor')
+    focusEditorNormalMode()
+  }
+}
+
 function App(): JSX.Element {
   const mountedAtRef = useRef(performance.now())
   const workspaceReadyLoggedRef = useRef(false)
@@ -267,6 +341,7 @@ function App(): JSX.Element {
   const setEmbedDrawingPaletteOpen = useStore((s) => s.setEmbedDrawingPaletteOpen)
   const sidebarOpen = useStore((s) => s.sidebarOpen)
   const noteListOpen = useStore((s) => s.noteListOpen)
+  const focusedPanel = useStore((s) => s.focusedPanel)
   const zenMode = useStore((s) => s.zenMode)
   const paneLayout = useStore((s) => s.paneLayout)
   const activePaneId = useStore((s) => s.activePaneId)
@@ -292,6 +367,8 @@ function App(): JSX.Element {
   const editorMaxWidth = useStore((s) => s.editorMaxWidth)
   const contentAlign = useStore((s) => s.contentAlign)
   const completedTaskStyle = useStore((s) => s.completedTaskStyle)
+  const mathRenderer = useStore((s) => s.mathRenderer)
+  const looseMathDelimiters = useStore((s) => s.looseMathDelimiters)
   const lineNumberPosition = useStore((s) => s.lineNumberPosition)
   const interfaceFont = useStore((s) => s.interfaceFont)
   const textFont = useStore((s) => s.textFont)
@@ -371,6 +448,7 @@ function App(): JSX.Element {
   useEffect(() => {
     initConfigSync()
     initCustomThemes()
+    initCustomCodeLanguages()
     initOverrides()
   }, [])
 
@@ -524,6 +602,7 @@ function App(): JSX.Element {
     html.style.setProperty('--z-editor-max-width', `${editorMaxWidth}px`)
     html.dataset.contentAlign = contentAlign
     html.dataset.completedTaskStyle = completedTaskStyle
+    html.dataset.mathRenderer = mathRenderer
     html.dataset.lineNumberPosition = lineNumberPosition
 
     const setFont = (name: string, value: string | null, fallback: string): void => {
@@ -545,7 +624,19 @@ function App(): JSX.Element {
       monoFont,
       '"SF Mono", "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace'
     )
-  }, [editorFontSize, editorLineHeight, previewMaxWidth, editorMaxWidth, contentAlign, completedTaskStyle, lineNumberPosition, interfaceFont, textFont, monoFont])
+  }, [editorFontSize, editorLineHeight, previewMaxWidth, editorMaxWidth, contentAlign, completedTaskStyle, mathRenderer, lineNumberPosition, interfaceFont, textFont, monoFont])
+
+  // Keep the markdown/preview pipeline pointed at the active math engine, even
+  // on surfaces that render markdown without the Preview component mounted
+  // (note hover cards, comments). Preview also sets this inline before its own
+  // render to avoid any effect-ordering race on toggle.
+  useEffect(() => {
+    setMarkdownMathRenderer(mathRenderer)
+  }, [mathRenderer])
+
+  useEffect(() => {
+    setMarkdownLooseMathDelimiters(looseMathDelimiters)
+  }, [looseMathDelimiters])
 
   // The app now always runs fully opaque.
   useEffect(() => {
@@ -612,6 +703,36 @@ function App(): JSX.Element {
         state.setWordWrap(!state.wordWrap)
         return
       }
+      // Alt+1..9 (⌃1..9 on macOS): jump straight to tab N (#497). Position
+      // counts across panes in the same order gt cycles through. Bails while
+      // a modal, palette, menu, or Settings (with its keymap recorder) is
+      // open, per the house rule for global key handlers: switching the tab
+      // under an overlay strands the user on a different note than they left.
+      const tabSelectBlocked =
+        state.settingsOpen ||
+        state.searchOpen ||
+        state.vaultTextSearchOpen ||
+        state.commandPaletteOpen ||
+        state.bufferPaletteOpen ||
+        state.templatePaletteOpen ||
+        state.embedDrawingPaletteOpen ||
+        state.outlinePaletteOpen ||
+        document.querySelector('[data-ctx-menu]') ||
+        document.querySelector('[data-prompt-modal]') ||
+        document.querySelector('[data-confirm-modal]')
+      if (!tabSelectBlocked) {
+        for (let i = 0; i < TAB_SELECT_KEYMAP_IDS.length; i += 1) {
+          const id = TAB_SELECT_KEYMAP_IDS[i]
+          if (!matchesShortcut(e, overrides, id)) continue
+          // These defaults were inserted mid-handler: when the combination is
+          // one the user explicitly rebound to another action (checked later
+          // in this chain), the rebind wins over the shipped default.
+          if (!overrides[id] && eventMatchesUserOverride(e, overrides, id)) continue
+          e.preventDefault()
+          selectActiveBuffer(state, i + 1)
+          return
+        }
+      }
       if (matchesShortcut(e, overrides, 'global.exportNotePdf')) {
         e.preventDefault()
         void state.exportActiveNotePdf()
@@ -652,6 +773,11 @@ function App(): JSX.Element {
       if (!isMacWordMotion && matchesShortcut(e, overrides, 'global.historyForward')) {
         e.preventDefault()
         void state.jumpToNextNote()
+        return
+      }
+      if (matchesShortcut(e, overrides, 'global.toggleRecentNote')) {
+        e.preventDefault()
+        void state.toggleRecentNote()
         return
       }
       if (matchesShortcut(e, overrides, 'global.searchNotes')) {
@@ -787,6 +913,25 @@ function App(): JSX.Element {
         state.setSettingsOpen(!state.settingsOpen)
         return
       }
+      // Mod+O — open a single markdown file (#449's deferred Win/Linux half).
+      // On macOS the File-menu accelerator swallows ⌘O before the renderer
+      // sees it, so this effectively serves the menu-less platforms. Vim keeps
+      // every claim it already has on Ctrl+O: the capture-phase jumplist takes
+      // normal and visual mode (#488's rule), and insert mode's i_CTRL-O
+      // arrives here defaultPrevented by the editor, hence the check. So with
+      // Vim on this fires only outside the editor; with Vim off it is simply
+      // Ctrl+O. Either side is rebindable in Settings → Keymaps.
+      if (
+        matchesShortcut(e, overrides, 'global.openFile') &&
+        !e.defaultPrevented &&
+        window.zen.getAppInfo().runtime === 'desktop' &&
+        window.zen.getCapabilities().supportsLocalFilesystemPickers &&
+        typeof window.zen.openFileDialog === 'function'
+      ) {
+        e.preventDefault()
+        void window.zen.openFileDialog()
+        return
+      }
     }
     // Pane-focus shortcuts must win over the editor. CodeMirror binds keys such
     // as Ctrl-h (delete character) and Ctrl-k (delete to line end), so when a
@@ -831,10 +976,21 @@ function App(): JSX.Element {
             : matchesShortcut(e, overrides, 'global.focusPaneRight')
               ? 'l'
               : null
-      if (!paneDir) return
-      e.preventDefault()
-      e.stopImmediatePropagation()
-      focusPaneOrEdgePanel(paneDir)
+      if (paneDir) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        focusPaneOrEdgePanel(paneDir)
+        return
+      }
+
+      // With Vim mode ON, VimNav owns every key inside a focused panel. With it
+      // OFF that listener isn't installed at all, so `Alt+hjkl` could put focus
+      // in a panel there was then no way to drive — you could reach Connections
+      // or the Outline and not move a row. The universal keys (arrows, Enter,
+      // Escape) work here regardless of mode; the single-letter motions (j/k,
+      // gg/G) stay Vim-only, as everywhere else in the app.
+      if (state.vimMode) return
+      handlePanelKeyWithoutVim(e, state.focusedPanel)
     }
     window.addEventListener('keydown', handler)
     window.addEventListener('keydown', focusPaneHandler, true)
@@ -930,7 +1086,14 @@ function App(): JSX.Element {
   }
 
   return (
-    <div className="zn-app-shell flex w-screen flex-col bg-paper-100 text-ink-900">
+    // `data-focused-panel` mirrors the store's focused panel onto the DOM. Panel
+    // focus is otherwise invisible for the right-side panels (they don't all take
+    // DOM focus), which makes pane navigation impossible to assert from outside
+    // the app — this is what the keyboard-navigation smoke checks read. (#477)
+    <div
+      className="zn-app-shell flex w-screen flex-col bg-paper-100 text-ink-900"
+      data-focused-panel={focusedPanel ?? 'none'}
+    >
       {!zenMode && <TitleBar />}
       <div className="flex min-h-0 flex-1">
         {!zenMode && sidebarOpen && <Sidebar />}

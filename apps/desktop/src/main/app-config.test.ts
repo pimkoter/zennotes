@@ -98,6 +98,12 @@ describe('TOML serialization', () => {
       editorLineHeight: 1.6,
       themeFamily: 'nord',
       themeMode: 'dark',
+      autoPairs: false,
+      autoPairQuotesInProse: true,
+      showHeadingLevelLabels: true,
+      editorTabSize: 2,
+      textReplacementsEnabled: true,
+      textReplacements: { '->': '→', '(c)': '©' },
       vaultTextSearchBackend: 'ripgrep',
       ripgrepBinaryPath: null,
       interfaceFont: null,
@@ -117,6 +123,12 @@ describe('TOML serialization', () => {
     expect(round.editorFontSize).toBe(18)
     expect(round.editorLineHeight).toBeCloseTo(1.6)
     expect(round.themeFamily).toBe('nord')
+    expect(round.autoPairs).toBe(false)
+    expect(round.autoPairQuotesInProse).toBe(true)
+    expect(round.showHeadingLevelLabels).toBe(true)
+    expect(round.editorTabSize).toBe(2)
+    expect(round.textReplacementsEnabled).toBe(true)
+    expect(round.textReplacements).toEqual({ '->': '→', '(c)': '©' })
     expect(round.vaultTextSearchBackend).toBe('ripgrep')
     expect(round.keymapOverrides).toEqual({ 'global.searchNotes': 'Mod+P' })
     expect(round.kanbanColumnTitles).toEqual({ 'status:todo': 'To Do' })
@@ -137,6 +149,10 @@ describe('TOML serialization', () => {
     expect(text).toContain('theme_mode = "dark"  # light | dark | auto')
     expect(text).toContain('backend = "auto"  # auto | builtin | ripgrep | fzf')
     expect(text).toContain('font_size = 16')
+    expect(text).toContain('auto_pairs = true  # auto-insert matching [] () and {} while typing')
+    expect(text).toContain(
+      'auto_pair_quotes_in_prose = false  # also auto-insert matching quotes outside Markdown code'
+    )
     expect(text).toContain('[vim]')
     expect(text).toContain('[view]')
     // Keymaps: every action listed as a commented, grouped default reference.
@@ -149,6 +165,8 @@ describe('TOML serialization', () => {
     expect(text).toContain('# Example: inbox = "Notes"')
     expect(text).toContain('[kanban_column_titles]')
     expect(text).toContain('[tweaks]')
+    expect(text).toContain('[text_replacements]')
+    expect(text).toContain('# Example: "->" = "→"')
     // And it must still parse back cleanly to the defaults.
     const { portable } = deserializeConfig(text)
     expect(portable.themeMode).toBe('dark')

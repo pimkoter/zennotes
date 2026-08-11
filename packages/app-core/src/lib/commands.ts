@@ -11,14 +11,17 @@ import { confirmApp } from './confirm-requests'
 import { promptApp } from './prompt-requests'
 import { buildMoveNotePrompt, parseMoveNoteTarget } from './move-note'
 import { focusPaneInDirection } from './pane-nav'
+import { focusSidebarPanel } from './sidebar-focus'
 import { findLeaf } from './pane-layout'
 import { requestPaneMode } from './pane-mode'
 import { resolveQuickNoteTitle } from './quick-note-title'
 import { forwardTaskWithPicker, taskAtEditorCursor } from './forward-task'
+import { toggleCheckbox } from './cm-toggle-checkbox'
 import { getKeymapDisplay, type KeymapId } from './keymaps'
 import { dispatchKeyboardContextMenu, findTabContextMenuTarget } from './keyboard-context-menu'
 import { resolveSystemFolderLabels } from './system-folder-labels'
 import { isCalendarToggleAvailable, noteFolderSubpath } from './vault-layout'
+import { runWorkflowById } from './workflow-trigger'
 import { DEMO_TOUR_START_PATH } from '@shared/demo-tour'
 
 const APP_WEBSITE_URL = 'https://zennotes.org'
@@ -109,6 +112,20 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
       category: 'Note',
       keywords: 'database table csv records spreadsheet board kanban base',
       run: () => void getState().newDatabase()
+    },
+    {
+      id: 'task.new',
+      title: 'New Task',
+      category: 'Note',
+      keywords: 'task todo checkbox tasknotes taskforge new add create file due priority',
+      run: () => void getState().newTaskFile()
+    },
+    {
+      id: 'task.new.folder',
+      title: 'New Task in Folder…',
+      category: 'Note',
+      keywords: 'task todo new create folder project location directory organize where place',
+      run: () => void getState().newTaskFileInChosenFolder()
     },
     {
       id: 'note.daily.today',
@@ -341,6 +358,16 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
       }
     },
     {
+      id: 'note.copy-html',
+      title: 'Copy Note as HTML (for email)',
+      category: 'Note',
+      keywords: 'copy clipboard html email rich mail paste share formatted',
+      when: () => !!getState().activeNote,
+      run: async () => {
+        await getState().copyActiveNoteAsHtml()
+      }
+    },
+    {
       id: 'note.export-pdf',
       title: 'Export Note as PDF…',
       category: 'Note',
@@ -352,6 +379,22 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
           window.zen.getAppInfo().runtime === 'web'),
       run: async () => {
         await getState().exportActiveNotePdf()
+      }
+    },
+    {
+      id: 'note.export-docx',
+      title: 'Export Note as Word Document…',
+      category: 'Note',
+      keywords: 'save word docx doc export office editable',
+      // Desktop-only: the serializer embeds local images from the main
+      // process, which the web app has no access to.
+      when: () =>
+        !!getState().activeNote &&
+        getState().workspaceMode !== 'remote' &&
+        window.zen.getAppInfo().runtime === 'desktop' &&
+        typeof window.zen.exportNoteDocx === 'function',
+      run: async () => {
+        await getState().exportActiveNoteDocx()
       }
     },
     {
@@ -799,6 +842,58 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
       }
     },
     {
+      id: 'task.start',
+      title: 'Mark Task In Progress',
+      category: 'Editor',
+      keywords: 'start begin task in progress doing wip partial half started',
+      when: () => {
+        const view = getState().editorViewRef
+        return !!view && !!getState().activeNote && !!taskAtEditorCursor(view)
+      },
+      run: async () => {
+        const view = getState().editorViewRef
+        if (!view) return
+        const task = taskAtEditorCursor(view)
+        if (!task) {
+          window.alert('Put the cursor on a task line to mark it in progress.')
+          return
+        }
+        await getState().startTaskFromList(task)
+      }
+    },
+    {
+      id: 'task.cancel',
+      title: 'Cancel Task',
+      category: 'Editor',
+      keywords: 'cancel task abandon drop dropped scrap wontfix strike',
+      when: () => {
+        const view = getState().editorViewRef
+        return !!view && !!getState().activeNote && !!taskAtEditorCursor(view)
+      },
+      run: async () => {
+        const view = getState().editorViewRef
+        if (!view) return
+        const task = taskAtEditorCursor(view)
+        if (!task) {
+          window.alert('Put the cursor on a task line to cancel it.')
+          return
+        }
+        await getState().cancelTaskFromList(task)
+      }
+    },
+    {
+      id: 'task.toggle-checkbox',
+      title: 'Toggle Checkbox',
+      category: 'Editor',
+      shortcut: shortcut('editor.toggleCheckbox'),
+      keywords: 'toggle checkbox task check uncheck line todo checklist convert done',
+      when: () => !!getState().editorViewRef && !!getState().activeNote,
+      run: () => {
+        const view = getState().editorViewRef
+        if (view) toggleCheckbox(view)
+      }
+    },
+    {
       id: 'nav.back',
       title: 'Go Back',
       category: 'Tabs',
@@ -813,6 +908,14 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
       shortcut: shortcut('vim.historyForward'),
       keywords: 'history next',
       run: () => getState().jumpToNextNote()
+    },
+    {
+      id: 'nav.toggle-recent',
+      title: 'Switch to Previous Note',
+      category: 'Tabs',
+      shortcut: shortcut('global.toggleRecentNote'),
+      keywords: 'recent last previous alternate toggle switch note',
+      run: () => getState().toggleRecentNote()
     }
   )
 
@@ -955,7 +1058,11 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
       run: () => {
         const st = getState()
         if (!st.sidebarOpen) st.toggleSidebar()
-        st.setFocusedPanel('sidebar')
+        // Moves DOM focus too (with retries), not just the store panel: the
+        // closing palette restores focus on unmount, and if that lands in a
+        // self-keyed surface (database grid) it re-steals every key while the
+        // sidebar paints its vim cursor. See focusSidebarPanel.
+        focusSidebarPanel()
       }
     },
     {
@@ -980,6 +1087,17 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
       keywords: 'tasks todo checklist due waiting done vault',
       when: () => !isTasksViewActive(getState()),
       run: () => getState().openTasksView()
+    },
+    {
+      id: 'view.workflows',
+      title: 'Open Workflows',
+      category: 'View',
+      shortcut: ':workflows',
+      keywords: 'workflow automation pipeline graph canvas nodes run dry',
+      // Hidden entirely when the feature is switched off in Settings, so the
+      // palette never offers a command that would open nothing.
+      when: () => getState().workflowsEnabled,
+      run: () => getState().openWorkflowsView()
     },
     {
       id: 'view.tags',
@@ -1474,6 +1592,19 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
       }
     },
     {
+      id: 'app.file.open',
+      title: 'Open File…',
+      category: 'Vault',
+      keywords: 'open file markdown external outside vault one-off document proofread standalone',
+      shortcut: shortcut('global.openFile'),
+      when: () =>
+        window.zen.getAppInfo().runtime === 'desktop' &&
+        window.zen.getCapabilities().supportsLocalFilesystemPickers,
+      run: async () => {
+        await window.zen.openFileDialog()
+      }
+    },
+    {
       id: 'app.vault.close',
       title: 'Close Current Vault',
       category: 'Vault',
@@ -1694,6 +1825,68 @@ export function buildCommands(options?: { includeUnavailable?: boolean }): Comma
           return getState().connectRemoteWorkspaceProfile(profile.id)
         }
       })
+    }
+  }
+
+  /* ---------------- Workflows: the picker, and one Run entry each ---------------- */
+  // Built from the store's workflow index the same way the remote profiles
+  // above are built from theirs, so the palette always reflects the vault as
+  // of the moment it opened. Drafts are left out on purpose: a draft cannot
+  // run, and a row that only answers with an error is worse than no row.
+  {
+    const state = getState()
+    // Where a workflow could run at all: the desktop app, on a local vault.
+    // Deliberately NOT gated on the feature switch, because the tutorial below
+    // must be findable BEFORE someone has opted in: starting it IS the opt-in,
+    // exactly like the button in Settings.
+    const workflowsPossibleHere =
+      state.workspaceMode !== 'remote' &&
+      window.zen.getAppInfo().runtime === 'desktop' &&
+      typeof window.zen.applyWorkflow === 'function'
+    if (workflowsPossibleHere) {
+      cmds.push({
+        id: 'workflow.tutorial',
+        title: 'Start Workflows Tutorial',
+        category: 'Workflow',
+        keywords: 'workflow tutorial learn guide walkthrough practice lesson automation onboarding',
+        when: () => getState().workspaceMode !== 'remote',
+        run: () => {
+          // Lazy on purpose: the tutorial's chapters and seeds belong to the
+          // lazy layer, and a palette command must not drag them into boot.
+          void import('./workflow-tutorial-flow').then((mod) => mod.startWorkflowTutorial())
+        }
+      })
+    }
+    const runnableHere = state.workflowsEnabled && workflowsPossibleHere
+    if (runnableHere) {
+      // `runnableHere` gates what this build of the list contains; the `when`
+      // guard gates every LATER use of a captured command object. The vim ex
+      // registry snapshots commands at editor mount, so without `when`, a
+      // `:workflow_run_…` name kept running the full write ladder after the
+      // feature was switched off in Settings.
+      const stillOn = (): boolean => getState().workflowsEnabled
+      // The browsable list, in the same drill-down shape as `Switch Vault…`.
+      cmds.push({
+        id: 'workflow.runPicker',
+        title: 'Run Workflow…',
+        category: 'Workflow',
+        keywords: 'workflow run list pick choose automation trigger pipeline',
+        when: stillOn,
+        run: () => {
+          /* handled by CommandPalette */
+        }
+      })
+      for (const entry of state.workflowIndex) {
+        if (entry.status !== 'active') continue
+        cmds.push({
+          id: `workflow.run.${entry.id}`,
+          title: `Run: ${entry.name}`,
+          category: 'Workflow',
+          keywords: `${entry.name} ${entry.description} ${entry.id} workflow run automation trigger pipeline`,
+          when: stillOn,
+          run: () => runWorkflowById(entry.id)
+        })
+      }
     }
   }
 

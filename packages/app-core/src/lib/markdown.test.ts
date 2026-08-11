@@ -1,9 +1,21 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { renderMarkdown } from './markdown'
+import { setMarkdownMathRenderer } from './markdown-settings'
 
 describe('renderMarkdown', () => {
+  it('hides leading YAML/TOML frontmatter in preview output', () => {
+    const yaml = renderMarkdown('---\ntitle: Hidden\ntags: [a, b]\n---\n\n# Visible')
+    expect(yaml).toContain('<h1 data-source-line="6">Visible</h1>')
+    expect(yaml).not.toContain('title: Hidden')
+    expect(yaml).not.toContain('<hr')
+
+    const toml = renderMarkdown('+++\ntitle = "Hidden"\n+++\n\nBody')
+    expect(toml).toContain('<p data-source-line="5">Body</p>')
+    expect(toml).not.toContain('title =')
+  })
+
   it('sanitizes raw HTML and javascript URLs', () => {
     const html = renderMarkdown(
       [
@@ -66,12 +78,71 @@ describe('renderMarkdown', () => {
     expect(html).toContain('alt="CleanShot 2026-04-13 at 14.31.31@2x.png"')
   })
 
+  it('#570: an Obsidian image embed honors its |WxH size hint', () => {
+    const html = renderMarkdown('![[assets/cognitive_web.jpg|100x50]]')
+
+    expect(html).toContain('<img')
+    expect(html).toContain('width="100"')
+    expect(html).toContain('height="50"')
+    expect(html).toContain('alt=""')
+  })
+
+  it('#570: a markdown image honors the alt-pipe size hint and keeps its caption', () => {
+    const html = renderMarkdown('![cognitive web|100x50](../../assets/cognitive_web.jpg)')
+
+    expect(html).toContain('width="100"')
+    expect(html).toContain('height="50"')
+    expect(html).toContain('alt="cognitive web"')
+  })
+
+  it('#570: a width-only hint sets no height, and plain alts stay untouched', () => {
+    const sized = renderMarkdown('![[assets/pic.png|300]]')
+    expect(sized).toContain('width="300"')
+    expect(sized).not.toContain('height=')
+
+    const plain = renderMarkdown('![[assets/pic.png|a nice caption]]')
+    expect(plain).toContain('alt="a nice caption"')
+    expect(plain).not.toContain('width=')
+  })
+
+  it('#570: a purely numeric markdown alt stays a caption, not a resize', () => {
+    // Only the wikilink form treats a bare number as a size hint; `![2024]`
+    // is the author's alt text (a year), and `![|2024]` is the sized form.
+    const html = renderMarkdown('![2024](assets/chart.png)')
+    expect(html).toContain('alt="2024"')
+    expect(html).not.toContain('width=')
+
+    const sized = renderMarkdown('![|2024](assets/chart.png)')
+    expect(sized).toContain('width="2024"')
+    expect(sized).toContain('alt=""')
+  })
+
+  it('#570: a zero dimension is not a hint and keeps the label', () => {
+    const html = renderMarkdown('![[assets/pic.png|0x300]]')
+    expect(html).toContain('alt="0x300"')
+    expect(html).not.toContain('height=')
+  })
+
   it('renders excalidraw embeds as placeholder divs', () => {
     const html = renderMarkdown('![[diagram.excalidraw]]')
 
     expect(html).toContain('data-excalidraw-embed="diagram.excalidraw"')
     expect(html).toContain('class="excalidraw-embed-host"')
     expect(html).not.toContain('<img')
+  })
+
+  it('#463: a generic-file Obsidian embed becomes an image node (→ attachment chip)', () => {
+    // `![[file.tldraw]]` flows through the same <img> path as `![](file.tldraw)`
+    // so the asset enhancer denotes it as a chip.
+    const html = renderMarkdown('![[attachments/diagram.tldraw]]')
+    expect(html).toContain('<img')
+    expect(html).toContain('src="attachments/diagram.tldraw"')
+  })
+
+  it('#463: a PDF Obsidian embed stays a link (keeps its rich embed), not an image', () => {
+    const html = renderMarkdown('![[attachments/report.pdf]]')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('attachments/report.pdf')
   })
 
   it('parses size hints on excalidraw embeds', () => {
@@ -111,7 +182,6 @@ describe('renderMarkdown', () => {
     expect(html).toContain('green')
   })
 })
-
 describe('table column widths (#294)', () => {
   it('renders a <colgroup> from a trailing zen:cols comment', () => {
     const html = renderMarkdown('| A | B |\n| --- | --- |\n| 1 | 2 |\n<!-- zen:cols=120,200 -->\n')
@@ -193,6 +263,27 @@ describe('currency vs inline math (reading view matches the editor)', () => {
   it('still renders block math', () => {
     expect(renderMarkdown('$$\n\\int_0^1 x\\,dx\n$$')).toContain('katex')
   })
+
+  it('numbers equation environments in document order', () => {
+    const html = renderMarkdown(
+      [
+        '$$',
+        '\\begin{equation}a=b\\end{equation}',
+        '$$',
+        '',
+        '$$',
+        '\\begin{equation}c=d\\end{equation}',
+        '$$'
+      ].join('\n')
+    )
+    const host = document.createElement('div')
+    host.innerHTML = html
+    expect(
+      Array.from(host.querySelectorAll('.katex-html .tag')).map((node) =>
+        node.textContent?.replace(/[\s\u200b]/g, '')
+      )
+    ).toEqual(['(1)', '(2)'])
+  })
 })
 
 describe('block math fence normalization (#399, reading view matches the editor)', () => {
@@ -240,5 +331,167 @@ describe('block math fence normalization (#399, reading view matches the editor)
     expect(renderMarkdown('$$a$$b$$')).not.toContain('katex-display')
     expect(renderMarkdown('$$ $$')).not.toContain('katex-display')
     expect(() => renderMarkdown('$$\nunclosed to the end')).not.toThrow()
+  })
+})
+
+describe('Typst math renderer', () => {
+  // Reset to the default so one test's engine choice can't leak into another
+  // (and into the rest of the suite, which asserts KaTeX output).
+  afterEach(() => setMarkdownMathRenderer('katex'))
+
+  it('emits SVG placeholders instead of KaTeX when Typst is active', () => {
+    setMarkdownMathRenderer('typst')
+    const block = renderMarkdown('$$\nx^2 + y^2\n$$')
+    expect(block).not.toContain('katex')
+    expect(block).toContain('zen-typst-math')
+    expect(block).toContain('zen-typst-display')
+    expect(block).toContain('data-typst-source="x^2 + y^2"')
+    expect(block).toContain('data-typst-display="true"')
+
+    const inline = renderMarkdown('Norm $a^2 + b^2$ inline.')
+    expect(inline).not.toContain('katex')
+    expect(inline).toContain('zen-typst-math')
+    expect(inline).toContain('data-typst-display="false"')
+    expect(inline).not.toContain('zen-typst-display')
+  })
+
+  it('keeps KaTeX as the default and restores it on switch back', () => {
+    // Default: KaTeX, no Typst placeholders.
+    expect(renderMarkdown('$$\nx^2\n$$')).toContain('katex')
+    expect(renderMarkdown('$$\nx^2\n$$')).not.toContain('zen-typst-math')
+
+    setMarkdownMathRenderer('typst')
+    expect(renderMarkdown('$$\nx^2\n$$')).toContain('zen-typst-math')
+
+    setMarkdownMathRenderer('katex')
+    const back = renderMarkdown('$$\nx^2\n$$')
+    expect(back).toContain('katex')
+    expect(back).not.toContain('zen-typst-math')
+  })
+
+  it('still leaves currency alone under Typst (shares the parse guards)', () => {
+    setMarkdownMathRenderer('typst')
+    const html = renderMarkdown('I paid $5 and got $10 back.')
+    expect(html).not.toContain('zen-typst-math')
+    expect(html).toContain('$5 and got $10 back.')
+  })
+})
+
+describe('display math inside a table cell (reading view matches the editor)', () => {
+  // The reported shape: a worked answer living in a table cell. Mid-line
+  // `$$…$$` can never be currency, so the guard must let it through, and the
+  // editor's table widget shows it as display math, so the reading view must
+  // agree.
+  const table = [
+    '| # | Ans | Working |',
+    '| --- | --- | --- |',
+    '| 9 | B | $$\\frac{800}{10000} \\times 100\\% = 8\\%$$ |'
+  ].join('\n')
+
+  it('renders $$…$$ in a cell as display math instead of literal source', () => {
+    setMarkdownMathRenderer('katex')
+    const html = renderMarkdown(table)
+    expect(html).toContain('katex')
+    expect(html).toContain('katex-display')
+    expect(html).not.toContain('$$\\frac')
+  })
+
+  it('renders a display placeholder under Typst', () => {
+    setMarkdownMathRenderer('typst')
+    const html = renderMarkdown(table)
+    expect(html).toContain('zen-typst-math')
+    expect(html).toContain('zen-typst-display')
+    setMarkdownMathRenderer('katex')
+  })
+
+  it('still leaves single-dollar currency in cells literal', () => {
+    setMarkdownMathRenderer('katex')
+    const html = renderMarkdown('| item | price |\n| --- | --- |\n| tea | $5 and $10 |')
+    expect(html).not.toContain('katex')
+    expect(html).toContain('$5 and $10')
+  })
+})
+
+describe('non-GFM task states in the reading view (#512)', () => {
+  it('renders [/], [-] and [>] as markers instead of literal text', () => {
+    const html = renderMarkdown(
+      '- [ ] open\n- [x] done\n- [/] started\n- [-] scrapped\n- [>] gone\n'
+    )
+    // The literal brackets are gone; each state gets a marker span and the
+    // `task-list-item` class that lines it up with the real checkboxes.
+    expect(html).not.toContain('[/]')
+    expect(html).not.toContain('[-]')
+    expect(html).not.toContain('[&#x3C;')
+    expect(html).toContain('zen-task-state-in-progress')
+    expect(html).toContain('zen-task-state-cancelled')
+    expect(html).toContain('zen-task-state-forwarded')
+    expect(html).toContain('zen-task-in-progress')
+    // The task text itself survives.
+    for (const text of ['open', 'done', 'started', 'scrapped', 'gone']) {
+      expect(html).toContain(text)
+    }
+  })
+
+  it('chips the metadata on an in-progress task, like a checked one', () => {
+    const html = renderMarkdown('- [/] Ship it due:2026-08-04 !high\n')
+    expect(html).toContain('zen-task-due')
+    expect(html).toContain('data-due="2026-08-04"')
+    expect(html).toContain('zen-task-prio-high')
+  })
+
+  it('leaves ordinary list items and mid-line brackets alone', () => {
+    const html = renderMarkdown('- plain item\n- see [-] in the middle\n- [-]nospace\n')
+    expect(html).not.toContain('zen-task-state')
+    expect(html).toContain('[-]nospace')
+  })
+
+  it('keeps a wikilink on a forwarded task', () => {
+    const html = renderMarkdown('- [>] gone [[Target]]\n')
+    expect(html).toContain('zen-task-state-forwarded')
+    expect(html).toContain('wikilink')
+    expect(html).toContain('Target')
+  })
+})
+
+describe('callout titles keep their inline markup (#549)', () => {
+  const titleOf = (html: string): string => {
+    const m = html.match(/<div class="callout-title">([\s\S]*?)<\/div>/)
+    return m ? m[1] : ''
+  }
+
+  it('keeps a link inside the title line, with no orphaned body paragraph', () => {
+    const html = renderMarkdown('> [!warning] This is warning [with](https://example.com) that is not multiline')
+    const title = titleOf(html)
+    expect(title).toContain('This is warning')
+    expect(title).toContain('<a')
+    expect(title).toContain('that is not multiline')
+    // The whole line is the title: nothing left over as a body paragraph.
+    expect(html).not.toMatch(/callout-title[\s\S]*?<\/div><p/)
+  })
+
+  it('keeps inline math inside the title line', () => {
+    const html = renderMarkdown('> [!note] This can also be reproduced with a $3+1=4$ formula inline.')
+    const title = titleOf(html)
+    expect(title).toContain('katex')
+    expect(title).toContain('formula inline.')
+  })
+
+  it('splits a multiline callout into title and a compact body without a stray <br>', () => {
+    const html = renderMarkdown('> [!note] line 1\n> line 2')
+    expect(titleOf(html)).toContain('line 1')
+    expect(html).toMatch(/<p[^>]*>line 2<\/p>/)
+    // The title/body soft break is a delimiter, not content: a leading <br>
+    // in the body paragraph rendered as a phantom empty line.
+    expect(html).not.toMatch(/<p[^>]*><br>/)
+  })
+
+  it('falls back to the capitalized type when the title line is empty', () => {
+    expect(titleOf(renderMarkdown('> [!note]\n> body only'))).toBe('Note')
+    expect(titleOf(renderMarkdown('> [!tip]'))).toBe('Tip')
+  })
+
+  it('leaves ordinary blockquotes and non-marker text alone', () => {
+    expect(renderMarkdown('> just a quote')).not.toContain('callout')
+    expect(renderMarkdown('> [!note]x is not a marker')).not.toContain('callout')
   })
 })

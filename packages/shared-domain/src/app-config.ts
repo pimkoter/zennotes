@@ -24,6 +24,13 @@ export type TimeFormat = '12h' | '24h'
 export type CompletedTaskStyle = 'none' | 'strikethrough' | 'gray' | 'gray-strikethrough'
 
 /**
+ * Which typesetter renders `$…$` / `$$…$$` math. KaTeX (default) parses the
+ * body as LaTeX; Typst parses it as Typst markup, so a note's math is written
+ * for whichever engine is selected, not interchangeable between them.
+ */
+export type MathRenderer = 'katex' | 'typst'
+
+/**
  * The host locale's 12/24-hour convention, used as the `timeFormat` default so a
  * fresh install matches the operating system out of the box. Reads only the
  * resolved format options (no `Date`), so it is safe to evaluate at module load.
@@ -63,15 +70,27 @@ export const PORTABLE_PREF_KEYS = [
   'fzfBinaryPath',
   // editor
   'livePreview',
+  'showHeadingLevelLabels',
+  'listIndentGuides',
   'renderTablesInLivePreview',
   'completedTaskStyle',
+  'mathRenderer',
+  'typstTagPreambles',
+  'looseMathDelimiters',
   'keepViewModeAcrossNotes',
+  'defaultPaneMode',
+  'syncTitleHeadingOnRename',
   'markdownSnippets',
+  'textReplacementsEnabled',
+  'textReplacements',
+  'autoPairs',
+  'autoPairQuotesInProse',
   'hideBuiltinTemplates',
   'tabsEnabled',
   'wrapTabs',
   'editorFontSize',
   'editorLineHeight',
+  'editorTabSize',
   'editorScrollOff',
   'timeFormat',
   'previewMaxWidth',
@@ -97,10 +116,15 @@ export const PORTABLE_PREF_KEYS = [
   'interfaceFont',
   'textFont',
   'monoFont',
+  // features
+  'workflowsEnabled',
+  'hiddenWorkflowPresets',
   // view
   'systemFolderLabels',
   'noteSortOrder',
+  'assetSortOrder',
   'groupByKind',
+  'nestedTags',
   'autoReveal',
   'quickNoteDateTitle',
   'quickNoteTitlePrefix',
@@ -108,6 +132,7 @@ export const PORTABLE_PREF_KEYS = [
   'calendarWeekStart',
   'calendarShowWeekNumbers',
   'tasksViewMode',
+  'showArchivedTasks',
   'kanbanGroupBy',
   'kanbanColumnTitles',
   'kanbanStatuses'
@@ -159,15 +184,27 @@ export const PORTABLE_DEFAULTS: Record<PortablePrefKey, unknown> = {
   ripgrepBinaryPath: null,
   fzfBinaryPath: null,
   livePreview: true,
+  showHeadingLevelLabels: false,
+  listIndentGuides: true,
   renderTablesInLivePreview: true,
   completedTaskStyle: 'none',
+  mathRenderer: 'katex',
+  typstTagPreambles: false,
+  looseMathDelimiters: false,
   keepViewModeAcrossNotes: false,
+  defaultPaneMode: 'edit',
+  syncTitleHeadingOnRename: true,
   markdownSnippets: true,
+  textReplacementsEnabled: true,
+  textReplacements: { '->': '→' },
+  autoPairs: true,
+  autoPairQuotesInProse: false,
   hideBuiltinTemplates: false,
   tabsEnabled: true,
   wrapTabs: false,
   editorFontSize: 16,
   editorLineHeight: 1.7,
+  editorTabSize: 4,
   editorScrollOff: 0,
   timeFormat: defaultTimeFormat(),
   previewMaxWidth: 920,
@@ -191,9 +228,13 @@ export const PORTABLE_DEFAULTS: Record<PortablePrefKey, unknown> = {
   interfaceFont: null,
   textFont: null,
   monoFont: null,
+  workflowsEnabled: false,
+  hiddenWorkflowPresets: [],
   systemFolderLabels: {},
   noteSortOrder: 'none',
+  assetSortOrder: 'name-asc',
   groupByKind: true,
+  nestedTags: true,
   autoReveal: false,
   quickNoteDateTitle: false,
   quickNoteTitlePrefix: 'Quick Note',
@@ -201,6 +242,7 @@ export const PORTABLE_DEFAULTS: Record<PortablePrefKey, unknown> = {
   calendarWeekStart: 'monday',
   calendarShowWeekNumbers: true,
   tasksViewMode: 'list',
+  showArchivedTasks: false,
   kanbanGroupBy: 'status',
   kanbanColumnTitles: {},
   kanbanStatuses: []

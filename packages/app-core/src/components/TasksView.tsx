@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isTasksViewActive, useStore, type TasksViewMode } from '../store'
-import { inferDailyTaskDueDates, type VaultTask } from '@shared/tasks'
+import { filterTasksForDisplay, inferDailyTaskDueDates, type VaultTask } from '@shared/tasks'
 import { buildDailyNoteDateByPath } from '../lib/vault-layout'
 import { computeTasksRender, isOverdue } from '../lib/tasks-filter'
 import { forwardTaskWithPicker } from '../lib/forward-task'
@@ -9,17 +9,20 @@ import { TasksCalendar } from './TasksCalendar'
 import { TasksKanban } from './TasksKanban'
 import { CalendarIcon, CheckSquareIcon, KanbanIcon, ListIcon } from './icons'
 import { advanceSequence, getKeymapBinding, matchesSequenceToken } from '../lib/keymaps'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { buildTaskMenuItems } from '../lib/task-context-menu'
 import { isImeComposing } from '../lib/ime'
 import { isAppOverlayOpen } from '../lib/overlay-open'
 
-type GroupKey = 'today' | 'upcoming' | 'waiting' | 'forwarded' | 'done'
+type GroupKey = 'today' | 'upcoming' | 'waiting' | 'forwarded' | 'done' | 'cancelled'
 
 const GROUP_LABELS: Record<GroupKey, string> = {
   today: 'Today',
   upcoming: 'Upcoming',
   waiting: 'Waiting',
   forwarded: 'Forwarded',
-  done: 'Done'
+  done: 'Done',
+  cancelled: 'Cancelled'
 }
 
 const VIEW_BUTTONS: Array<{
@@ -49,11 +52,14 @@ export function TasksView(): JSX.Element {
   const refreshTasks = useStore((s) => s.refreshTasks)
   const openTaskAt = useStore((s) => s.openTaskAt)
   const toggleTaskFromList = useStore((s) => s.toggleTaskFromList)
+  const cancelTaskFromList = useStore((s) => s.cancelTaskFromList)
+  const startTaskFromList = useStore((s) => s.startTaskFromList)
   const applyTaskMutation = useStore((s) => s.applyTaskMutation)
   const moveTaskToDate = useStore((s) => s.moveTaskToDate)
   const addTaskForDate = useStore((s) => s.addTaskForDate)
   const closeTasksView = useStore((s) => s.closeTasksView)
   const reorderTaskInNote = useStore((s) => s.reorderTaskInNote)
+  const newTaskFile = useStore((s) => s.newTaskFile)
 
   // Tasks written inside a daily note inherit that note's date as an implicit
   // due date (a clean line, no `due:` token) so they appear on the calendar.
@@ -63,7 +69,11 @@ export function TasksView(): JSX.Element {
     () => buildDailyNoteDateByPath(notes, vaultSettings),
     [notes, vaultSettings]
   )
-  const tasks = useMemo(() => inferDailyTaskDueDates(rawTasks, dueByPath), [rawTasks, dueByPath])
+  const showArchivedTasks = useStore((s) => s.showArchivedTasks)
+  const tasks = useMemo(
+    () => inferDailyTaskDueDates(filterTasksForDisplay(rawTasks, showArchivedTasks), dueByPath),
+    [rawTasks, showArchivedTasks, dueByPath]
+  )
   const keymapOverrides = useStore((s) => s.keymapOverrides)
   const vimMode = useStore((s) => s.vimMode)
   const viewMode = useStore((s) => s.tasksViewMode)
@@ -80,7 +90,8 @@ export function TasksView(): JSX.Element {
     upcoming: false,
     waiting: false,
     forwarded: true,
-    done: true
+    done: true,
+    cancelled: true
   })
 
   // Keep a just-toggled task in its pre-toggle group for TASK_LINGER_MS so it
@@ -103,6 +114,7 @@ export function TasksView(): JSX.Element {
   // of ex commands.
   const [exOpen, setExOpen] = useState(false)
   const [exValue, setExValue] = useState('')
+  const [menu, setMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
 
   // "Today" is computed once per render from the clock — stable enough for a
   // single view session. If the user leaves the view past midnight and comes
@@ -144,6 +156,32 @@ export function TasksView(): JSX.Element {
     currentRowIdx >= 0 && render.rows[currentRowIdx]?.kind === 'task'
       ? render.rows[currentRowIdx].task
       : undefined
+
+  // The hint chip on the cursor row must name a key that actually works here.
+  // `Space` reaches this view only when it is not the Vim leader, and it is the
+  // leader by default, so Space opens leader hints and the row's promise of
+  // "Space check" never fires. Name the toggle binding instead (`x`), and with
+  // Vim mode off name nothing: single-key list shortcuts are disabled there, so
+  // only Enter/arrows remain.
+  const toggleKeyLabel = useMemo(() => {
+    if (!vimMode) return null
+    const leader = getKeymapBinding(keymapOverrides, 'vim.leaderPrefix')
+    const toggle = getKeymapBinding(keymapOverrides, 'nav.toggleTask')
+    return leader.trim().toLowerCase() === 'space' ? toggle : 'Space'
+  }, [vimMode, keymapOverrides])
+
+  const openTaskMenu = useCallback(
+    (e: React.MouseEvent, task: VaultTask): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      setMenu({
+        x: e.clientX,
+        y: e.clientY,
+        items: buildTaskMenuItems(task, { today, showKeyHints: vimMode })
+      })
+    },
+    [today, vimMode]
+  )
 
   // On first mount, pull fresh if we have nothing yet.
   useEffect(() => {
@@ -287,6 +325,10 @@ export function TasksView(): JSX.Element {
         case 'r':
           void refreshTasks()
           return
+        case 'new':
+        case 'add':
+          void store.newTaskFile()
+          return
         case 'list':
         case 'ls':
           setViewMode('list')
@@ -403,6 +445,15 @@ export function TasksView(): JSX.Element {
         return
       }
 
+      // Quick-add a new task file. View-independent (works in list/calendar/
+      // kanban). A single-key shortcut, so it's gated on Vim mode like the rest;
+      // with Vim off, the header "+ New task" button is the way in.
+      if (vimMode && key === 'a') {
+        consume()
+        void newTaskFile()
+        return
+      }
+
       if (seq('nav.filter')) {
         consume()
         filterRef.current?.focus()
@@ -481,6 +532,19 @@ export function TasksView(): JSX.Element {
         void forwardTaskWithPicker(currentTask)
         return
       }
+      // Cancel / un-cancel the selected task (#450). Vim-gated single key.
+      if (vimMode && key === 'c' && currentTask) {
+        consume()
+        void cancelTaskFromList(currentTask)
+        return
+      }
+      // Start / un-start the selected task (#512). Vim-gated single key. The
+      // task stays in Today, so the row keeps its place and the cursor with it.
+      if (vimMode && key === 'i' && currentTask) {
+        consume()
+        void startTaskFromList(currentTask)
+        return
+      }
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
@@ -496,10 +560,13 @@ export function TasksView(): JSX.Element {
     vimMode,
     openTaskAt,
     lingerToggle,
+    cancelTaskFromList,
+    startTaskFromList,
     closeTasksView,
     setFilter,
     viewMode,
-    setViewMode
+    setViewMode,
+    newTaskFile
   ])
 
   return (
@@ -561,6 +628,14 @@ export function TasksView(): JSX.Element {
               className="w-56 rounded-md border border-paper-300/60 bg-paper-200/60 px-2 py-1 text-xs outline-none focus:border-paper-400/70"
             />
           )}
+          <button
+            type="button"
+            onClick={() => void newTaskFile()}
+            className="rounded-md border border-accent/45 bg-accent/10 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/20"
+            title="New task (a)"
+          >
+            + New task
+          </button>
           <button
             type="button"
             onClick={() => void refreshTasks()}
@@ -625,6 +700,8 @@ export function TasksView(): JSX.Element {
                   if (ti >= 0) setCursorIndex(ti)
                 }}
                 onReorder={reorderTaskByDrag}
+                onContextMenu={openTaskMenu}
+                toggleKeyLabel={toggleKeyLabel}
               />
             )
           })}
@@ -689,13 +766,33 @@ export function TasksView(): JSX.Element {
           />
         </form>
       ) : (
+        /* Each line names only keys that fire in the current mode. The list's
+           single keys are Vim-gated (arrows, Enter and the Shift+J/K chord
+           are the universal ones); the board and the calendar predate that
+           gating and keep single-key navigation with Vim off, so their lines
+           lose only i / c / :q, which are gated on every surface. */
         <div className="border-t border-paper-300/45 px-4 py-1.5 text-xs text-current/40">
           {viewMode === 'list'
-            ? 'j/k move · J/K reorder · drag to reorder · Enter/o open · Space/x toggle · / filter · :q close'
+            ? vimMode
+              ? 'j/k move · J/K reorder · Enter/o open · x toggle · i start · c cancel · right-click actions · :q close'
+              : '↑/↓ move · Shift+J/K reorder · Enter open · right-click actions'
             : viewMode === 'calendar'
-              ? 'h/j/k/l day · [ ] month · gt today · Tab pick · < > reschedule · drag to move · Enter open · :q'
-              : 'h/l column · j/k card · Space toggle · Enter open · 1/2/3 view · : command · :q close'}
+              ? vimMode
+                ? 'h/j/k/l day · [ ] month · Tab pick · x toggle · i start · c cancel · drag to move · right-click actions · :q'
+                : 'h/j/k/l day · [ ] month · Tab pick · x toggle · drag to move · right-click actions'
+              : vimMode
+                ? 'h/l column · j/k card · x toggle · i start · c cancel · Enter open · right-click actions · :q close'
+                : 'h/l column · j/k card · x toggle · Enter open · right-click actions'}
         </div>
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menu.items}
+          onClose={() => setMenu(null)}
+        />
       )}
     </div>
   )

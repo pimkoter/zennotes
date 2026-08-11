@@ -15,7 +15,7 @@ function mount(doc: string, selection?: EditorSelection | { anchor: number }): E
     state: EditorState.create({
       doc,
       selection: selection ?? { anchor: 0 },
-      extensions: [markdown({ base: markdownLanguage }), mathRenderExtension]
+      extensions: [markdown({ base: markdownLanguage }), mathRenderExtension('katex')]
     })
   })
   forceParsing(view, doc.length, 5000)
@@ -35,6 +35,30 @@ describe('mathRenderExtension', () => {
   it('renders block $$…$$ formulas whose fences own their lines', () => {
     const view = mount('start\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nend')
     expect(view.dom.querySelectorAll('.cm-math-block').length).toBe(1)
+    view.destroy()
+  })
+
+  it('numbers equation environments in document order', () => {
+    const view = mount(
+      [
+        'start',
+        '',
+        '$$',
+        '\\begin{equation}a=b\\end{equation}',
+        '$$',
+        '',
+        '$$',
+        '\\begin{equation}c=d\\end{equation}',
+        '$$',
+        '',
+        'end'
+      ].join('\n')
+    )
+    expect(
+      Array.from(view.dom.querySelectorAll('.katex-html .tag')).map((node) =>
+        node.textContent?.replace(/[\s\u200b]/g, '')
+      )
+    ).toEqual(['(1)', '(2)'])
     view.destroy()
   })
 

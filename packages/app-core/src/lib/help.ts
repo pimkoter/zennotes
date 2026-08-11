@@ -56,12 +56,12 @@ export const HELP_QUICK_START: HelpCard[] = [
   {
     title: 'Format a selection',
     body:
-      'Select text to pop up a formatting toolbar — bold, italic, strikethrough, highlight, code, math, link, comment, and a “Turn into” menu that re-types the block (Text, Heading 1–3, lists, quote, code). The same actions have keyboard shortcuts that work on every platform, in or out of Vim mode: Mod+B bold, Mod+I italic, Mod+E code, Mod+K link, Shift+Mod+S strikethrough, Shift+Mod+H highlight, Shift+Mod+M math (Mod is ⌘ on macOS, Ctrl on Windows/Linux). Press Mod+/ to focus the toolbar and walk it with the arrow keys; Enter applies, Esc returns to the text.'
+      'Select text to pop up a formatting toolbar — bold, italic, strikethrough, highlight, code, math, link, comment, and a “Turn into” menu that re-types the block (Text, Heading 1–3, lists, quote, code). The same actions have keyboard shortcuts that work on every platform, in or out of Vim mode: Mod+B bold, Mod+I italic, Mod+E code, Mod+K link, Shift+Mod+S strikethrough, Shift+Mod+H highlight, Shift+Mod+M math (Mod is ⌘ on macOS, Ctrl on Windows/Linux). Press Mod+/ to focus the toolbar and walk it with the arrow keys; Enter applies, Esc returns to the text. Once a formatted word is typed, **Ctrl+.** (Windows/Linux: **Alt+]**) steps the cursor past the closing markers so you can keep writing outside them, and **Ctrl+,** (Windows/Linux: **Alt+[**) steps back over the previous ones — repeat either to walk the line pair by pair, brackets included. (The Mac stays off Option chords on purpose: Option+5 is how German-family layouts type `[`.) Pressing the format shortcut a second time (Mod+B again) also leaves the span. All three work in Vim mode and out of it, and the two hops can be rebound in Settings → Keymaps.'
   },
   {
     title: 'Switch between write and read modes',
     body:
-      'Use Edit when you want raw markdown control, Split when you want source and rendered output together, and Preview when you want a clean reading surface with keyboard navigation.'
+      'Use Edit when you want raw markdown control, Split when you want source and rendered output together, and Preview when you want a clean reading surface with keyboard navigation. Your editor cursor stays where you left it when you return from Preview, and switching into Preview opens the reading view at the line you were editing instead of the top of the note. Each note remembers its own last mode; pick what notes open in before that with Settings → Editor → Default view mode (Edit, Split, or Preview), which travels with your portable config.'
   },
   {
     title: 'Find things in the right place',
@@ -117,9 +117,14 @@ export const HELP_HOW_TO_GUIDES: HelpCard[] = [
       'Run "New Drawing" from the command palette to create a `.excalidraw` file and open it in a built-in Excalidraw editor tab. Drawings are first-class vault files — they appear in the sidebar, can be moved and archived like notes, and auto-refresh when edited. To embed a drawing inside a note, use "Embed Existing Drawing…" (pick from a searchable list) or "Embed New Drawing" (create one at the cursor and switch to its editor). The embed syntax is `![[name.excalidraw]]`, the same as images, and supports optional size hints like `![[name.excalidraw|600]]` or `![[name.excalidraw|600x400]]`. Clicking an embed opens the drawing in a new tab. Obsidian-style `.excalidraw.md` files are also supported.'
   },
   {
+    title: 'Automate repetitive edits with Workflows',
+    body:
+      'Workflows turn a vault ritual (find the notes tagged `#book`, keep the ones rated 4 or higher, write them as a table into the reading log, tag the rest `#someday`) into a file you run with one key. The feature is off by default: turn it on once under Settings → Workflows and the view appears in the sidebar (also `Space a` in Vim mode, or "Open Workflows" in the command palette). Start from the recipe gallery ("New workflow"): each recipe is an ordinary `.md` file that copies into `.zennotes/workflows/` and opens in the same editor as anything you write yourself, as a canvas and as text, whichever you prefer. Press `R` (or the Run button) and nothing happens blind: a dry-run confirmation lists every change first, grouped and counted, and after you apply, Undo restores every file the run wrote, byte for byte. That promise survives the worst case: a run the app never finished (a crash mid-apply) is found on the next launch and offered back as an undo, and undoing a run names any file you edited after it ran instead of reverting your work silently. You can also run any active workflow without opening the view at all: every one is a command-palette entry, and "Run Workflow…" opens a picker; the receipt arrives as a toast carrying the Undo button. New workflows start as inert drafts until you activate them, and importing a workflow someone shared is a review, never an install. New to all of this? Settings → Workflows → Start tutorial walks the whole loop hands-on, on a practice folder it seeds and then removes.'
+  },
+  {
     title: 'Turn a CSV into a database',
     body:
-      'Run “New Database” from the command palette (or right-click a folder in the sidebar → New database) to create one, or just open an existing `.csv` file from the vault. ZenNotes stores the data as `<Name>.csv` plus a small `<Name>.csv.base.json` sidecar that holds field types, select options, and your saved views. Edit cells inline in the Table view, group records in a Board by any select field, switch the raw-CSV toggle to see the underlying file, and press `o` on a row to open it as a full Markdown page whose frontmatter mirrors the row’s properties. The whole grid is keyboard-driven — see the Database grid shortcuts.'
+      'Run “New Database” from the command palette (or right-click a folder in the sidebar → New database) to create one, or just open an existing `.csv` file from the vault. ZenNotes stores a database as a `<Name>.base` folder: `data.csv` (the rows), `schema.json` (field types, select options, saved views), and the record-page notes rows open into. Edit cells inline in the Table view, group records in a Board by any select field, switch the raw-CSV toggle to see the underlying file, and press `o` on a row to open it as a full Markdown page whose frontmatter mirrors the row’s properties. The whole grid is keyboard-driven — see the Database grid shortcuts.'
   },
   {
     title: 'Move a note without dragging',
@@ -162,6 +167,16 @@ export const HELP_HOW_TO_GUIDES: HelpCard[] = [
       'Prefer ZenNotes in a browser instead of the desktop app? Pull the prebuilt, multi-arch image from Docker Hub with `docker pull adibhanna/zennotes`, generate a login token and keep a copy (`openssl rand -hex 32`), then start the container with your vault mounted:\n`docker run -d -p 127.0.0.1:7878:7878 \\\n  -e ZENNOTES_AUTH_TOKEN=<your-token> \\\n  -v "$HOME/Documents/MyVault:/workspace" \\\n  -v "$HOME/zennotes-data:/data" \\\n  adibhanna/zennotes:latest`\nThe server binds to 0.0.0.0, so it will not start without that token — open http://localhost:7878 and paste the token on first connect. Your notes stay as ordinary .md files on the host, and the desktop app can point at the same server. The full walkthrough, including reverse-proxy and TLS hardening, lives at zennotes.org/docs.'
   },
   {
+    title: 'Share Typst definitions across notes with tags',
+    body:
+      'With the **Typst** math renderer, Settings → Editor → **Typst definitions from tags** lets a note\'s tags decide which Typst definitions its formulas compile against, so `vector()` can be an arrow in physics and bold in maths without redefining it in every note. Write a preamble as an ordinary note inside the preamble folder (named `typst` unless you change it), titled with the tag path in dots: `typst/physics.md` applies to `#physics`, `typst/physics.mechanics.md` to `#physics/mechanics`. Nested tags layer general → specific, so the narrower tag wins, and a note carrying several tags gets them in alphabetical order so the same tags always compile the same way. Preamble notes are ordinary notes: they sync, they are searchable, and editing one re-renders every note that uses it. Off by default, and it costs nothing when off.\n\nOne thing preambles do **not** do is add tags. A preamble is Typst source, where `#let vec(x) = bold(x)` defines a variable and formulas refer to it as `#vec`, so treating those as hashtags filled the tag list with `let` and every variable name. Notes in the preamble folder are left out of the tag index on every runtime: the app, the `zn` CLI, MCP, and the self-hosted server. If you already keep ordinary tagged notes in a folder called `typst`, point Settings → Editor → **Typst preamble folder** somewhere else and those notes get their tags back. The name is stored in the vault, so it travels with it.'
+  },
+  {
+    title: 'Connect the desktop app to a self-hosted server',
+    body:
+      'Settings → Vault → Remote workspace takes the server URL and its token. **On macOS**, a server on your own network also needs the system Local Network permission: macOS asks the first time ZenNotes reaches a local address, and if you dismiss that prompt the connection fails with no packets sent and no further warning — it looks exactly like a server that is down. Turn it back on under System Settings → Privacy & Security → Local Network. A server reached over the public internet is unaffected.'
+  },
+  {
     title: 'Customize the look: themes vs. overrides',
     body:
       'ZenNotes has two CSS-based ways to change how it looks. A **theme** is a complete palette you select under Settings → Appearance → Custom. An **override** is a small CSS file that layers on top of whichever theme is active, toggled on or off under Settings → Appearance → Overrides. Reach for a theme to design a whole look; reach for an override to change one or two things — a different accent, a darker background — without forking a theme. Both apply live, no restart.'
@@ -170,6 +185,11 @@ export const HELP_HOW_TO_GUIDES: HelpCard[] = [
     title: 'Build a custom theme',
     body:
       'Settings → Appearance → Custom → New theme scaffolds a folder at `~/.config/zennotes/themes/<name>/` with a `manifest.json` and a `theme.css`, reveals it, and adds a card you click to apply. Edits to `theme.css` apply live. Only the active theme CSS is loaded, so write `:root { … }` for the light/shared values and `:root[data-theme-mode="dark"] { … }` for dark — you never put the theme name in a selector. Colors are the `--z-*` tokens, written as space-separated RGB (`--z-accent: 255 59 48;`): backgrounds `--z-bg` / `--z-bg-softer` / `--z-bg-1`…`--z-bg-4`, text `--z-fg-1` / `--z-fg-2` / `--z-grey-0`…`--z-grey-2`, accent `--z-accent` / `--z-accent-soft` / `--z-accent-muted`, and the syntax hues `--z-red` / `--z-green` / `--z-yellow` / `--z-blue` / `--z-purple` / `--z-aqua`. `manifest.json` carries name, author, version, description, `modes` (light | dark | both), and an optional preview swatch.'
+  },
+  {
+    title: 'Add syntax highlighting for another language',
+    body:
+      'In the desktop app, open Settings → Editor → Languages and select a self-contained `.tmLanguage.json` TextMate grammar. Choose its fenced-code tag and aliases, then edit the sample to verify the live preview before installing it. Enabled languages highlight the same fences in Edit, Split, and Preview without changing your Markdown files. Built-in language and diagram tags stay reserved. ZenNotes stores installed packs machine-wide under `~/.config/zennotes/languages/`; this first version adds highlighting only, not completion, formatting, indentation, or language-server features.'
   },
   {
     title: 'Override one thing on any theme',
@@ -192,7 +212,7 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'System folders are workflow buckets',
     body:
-      'Inbox, Quick Notes, Archive, and Trash are built-in top-level buckets with specific jobs. You can rename how they appear in the UI without renaming the actual folders on disk, which keeps your workflow flexible without breaking the file layout.'
+      'Inbox, Quick Notes, Archive, and Trash are built-in top-level buckets with specific jobs. You can rename how they appear in the UI without renaming the actual folders on disk, which keeps your workflow flexible without breaking the file layout. Or go the other way: **Settings → Vault → Folder Paths** points any of the four at a directory of your choosing (say `01 - Entry` as your Inbox, Obsidian-style), so an existing vault keeps its layout and ZenNotes adapts to it. The mapping is stored in the vault itself and every surface follows it: counts, tasks, search, workflows, the web app, and the MCP server. Single directory names only, no collisions, reserved names refused.'
   },
   {
     title: 'Primary notes can live at the vault root',
@@ -232,7 +252,27 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'Tasks, tags, archive, and trash are vault-wide views',
     body:
-      'Tasks scans every note for checkboxes, Tags lets you browse notes that carry all of the selected tags (toggle Match to Any for a union), Archive gives you a dedicated list of cold-storage notes, and Trash gives you a recovery surface for deleted notes without turning the left rail into a second browser. Selected tags accumulate so you can narrow across several at once; clear them with the Selected strip’s “Clear all”, the `c` key, or a right-click on any tag chip (which also offers “Unselect others” to keep just that one).'
+      'Tasks scans every note for checkboxes, Tags lets you browse notes that carry all of the selected tags (toggle Match to Any for a union), Archive gives you a dedicated list of cold-storage notes, and Trash gives you a recovery surface for deleted notes without turning the left rail into a second browser. Selected tags accumulate so you can narrow across several at once; clear them with the Selected strip’s “Clear all”, the `c` key, or a right-click on any tag chip (which also offers “Unselect others” to keep just that one). A tag chip’s context menu also carries “Rename Tag…” and “Delete Tag…”, which rewrite or remove that hashtag across the whole vault. Tags work in any script (`#тест` and `#标签` are tags), while headings (`# x`) and hex colors (`#1971c2`) are not.'
+  },
+  {
+    title: 'Archiving a note retires its tasks',
+    body:
+      'When a note moves to the Archive, its tasks leave the Tasks list, the Kanban boards, and the calendars with it, keeping Done focused on recent work instead of years of finished projects. Nothing is written: the markdown keeps its checkboxes, and un-archiving the note brings its tasks straight back. Archiving a note that still has open tasks asks first, so live work never disappears silently, and a bulk archive from the sidebar asks once for the whole set. Prefer the old behavior? Settings → Tasks → “Show tasks from archived notes” (or `show_archived_tasks` in `config.toml`) keeps archived tasks on every surface, including the Archive column on the folder Kanban board, which otherwise steps aside.'
+  },
+  {
+    title: 'Not every checkbox is a task',
+    body:
+      'A reading list is a checklist, not a to-do. Add `tasks: false` (or `off`) to a note’s frontmatter and its checkboxes stay checkboxes: they render and toggle exactly as before, but stop feeding the Tasks list, the boards, the calendars, `zn task list`, and the MCP tools. On a #task note, `tasks: note` keeps the note itself on the board while silencing its internal checklist, so a project note can be one card instead of twenty. To retire a whole folder (a media backlog, a reference library), right-click it in the sidebar and choose “Exclude from Tasks”, or manage the list under Settings → Tasks; the exclusion is stored in the vault’s own settings, so desktop, web, mobile, and the CLI all agree. When you do want to see past it, `zn task list --include-excluded` and the MCP `list_tasks` tool’s `includeExcluded` flag list everything.'
+  },
+  {
+    title: 'Any line becomes a checkbox with ⌘L',
+    body:
+      'Press `⌘L` (`Ctrl+L` on Windows/Linux) in the editor to turn the current line into a checkbox and toggle it on repeat: plain text becomes `- [ ] text`, an existing bullet or numbered item keeps its marker (`* note` becomes `* [ ] note`), and pressing again flips `[ ]` to `[x]` and back. An in-progress `[/]` checks off to `[x]`; forwarded `[>]` and cancelled `[-]` lines are left alone, since those states have their own commands. It applies to every line of a multi-line selection, works with Vim mode on or off, is remappable as `editor.toggleCheckbox` under `[keymaps]` in `config.toml`, and is also in the command palette as “Toggle Checkbox”.'
+  },
+  {
+    title: 'A whole note can be a task (task files)',
+    body:
+      'Besides inline `- [ ]` checkboxes, a whole note can itself be a task: give its frontmatter a `task` tag (`tags: [task]`) and its metadata lives in frontmatter — `status` (open / in-progress / done…), `priority` (high / normal / low), `due` and `scheduled` (`YYYY-MM-DD`), plus any `tags`, while the note body holds free-form detail or sub-checkboxes. These "task files" show up in the Tasks views right alongside inline tasks, so both styles live in one vault. This is the TaskNotes convention, so a vault stays interoperable with TaskForge and Obsidian. Quick-add one from the command palette (**New Task**, or **New Task in Folder…** to choose where it lands), the "+ New task" button in the Tasks header, the `a` key (Vim mode), or the `:newtask` / `:task` ex command — and `:newtask Projects/Website` drops it straight into a folder so multiple projects stay organized. New task files default to your configured tasks location (Settings → New Drawings, Databases & Tasks; the inbox by default), and the folder-picking options override that per task. Checking a task file off rewrites its frontmatter (`status: done` and a `completedDate`) rather than a checkbox character, and rescheduling from the calendar or changing its column on the Kanban board updates the matching frontmatter field. Delete on a task file trashes the whole note (after a confirm).'
   },
   {
     title: 'The Tasks calendar schedules and reschedules',
@@ -242,12 +282,32 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'The Tasks Kanban board, custom statuses, and any field',
     body:
-      'Switch Tasks to Kanban (button or `3`) for a column board. "Group by" offers Status (Today / Upcoming / Waiting / Done, derived from due dates and `@waiting`), Priority, Folder, Custom status, and one entry per inline `@field` you use. Any task field works: tag tasks with `@key:value` tokens like `@status:review`, `@sprint:24`, or `@area:backend`, and each key becomes its own board with a column per value (auto-discovered, so it appears the moment you use it). For the status field, list the columns in order in `config.toml` under `[view]`, e.g. `kanban_statuses = ["backlog", "in_progress", "review", "done"]`; other fields sort their columns automatically. A note-level `status:` in frontmatter sets a default for that note’s tasks. Everything is keyboard-first: `h`/`l` move between columns, `j`/`k` between cards, `g` cycles the group-by, `Shift+H` / `Shift+L` send the focused card to the previous/next column (rewriting its `@field` token), `<` / `>` reorder the columns themselves (saved per board), and `Space`/`Enter` toggle/open. Drag does the same with the mouse — including dragging a column header to reorder. Renaming a column (click its title, or `[kanban_column_titles]` in `config.toml`) sets a display label only: the column still shows its underlying `@field:value` beneath the name, and moving a card in writes that value, not the label.'
+      'Switch Tasks to Kanban (button or `3`) for a column board. "Group by" offers Status (Today / Upcoming / Waiting / Done, derived from due dates and `@waiting`), Priority, Folder, Custom status, and one entry per inline `@field` you use. Any task field works: tag tasks with `@key:value` tokens like `@status:review`, `@sprint:24`, or `@area:backend`, and each key becomes its own board with a column per value (auto-discovered, so it appears the moment you use it). For the status field, define the columns under Settings → Tasks → Kanban statuses, or list them in order in `config.toml` under `[view]`, e.g. `kanban_statuses = ["backlog", "in_progress", "review", "done"]`; other fields sort their columns automatically. A note-level `status:` in frontmatter sets a default for that note’s tasks. Everything is keyboard-first: `h`/`l` move between columns, `j`/`k` between cards, `g` cycles the group-by, `Shift+H` / `Shift+L` send the focused card to the previous/next column (rewriting its `@field` token), `<` / `>` reorder the columns themselves (saved per board), and `Space`/`Enter` toggle/open. Drag does the same with the mouse — including dragging a column header to reorder, and dragging a card to a new spot inside its column to hand-prioritize it (that arrangement is saved per column and restored when you come back to the board). Renaming a column (click its title, or `[kanban_column_titles]` in `config.toml`) sets a display label only: the column still shows its underlying `@field:value` beneath the name, and moving a card in writes that value, not the label.'
   },
   {
     title: 'Forward a task to another note',
     body:
       'Forwarding moves a task to a different note while leaving a record behind — the bullet-journal “migrate” gesture. Type `>` inside a task’s checkbox (turning `- [ ]` into `- [>]`) to open a note picker, run “Forward Task to Note…” from the command palette with the cursor on a task, or press `>` on a task in the Tasks list. The original stays as `- [>] … [[Target]]` (a forwarded marker linking to where it went), and a fresh `- [ ] … [[Source]]` copy is added to the note you pick, backlinked home. Forwarded tasks collect under their own “Forwarded” group in the Tasks list, kept out of Today and Done.'
+  },
+  {
+    title: 'Cancel a task',
+    body:
+      'Cancelling marks a task as intentionally abandoned — distinct from done (finished) or forwarded (moved). Write `- [-]` directly, run “Cancel Task” from the command palette with the cursor on a task, or press `c` on a task in the Tasks list (press `c` again to un-cancel). A cancelled task renders with a muted `✕` and struck-through text, and collects under its own “Cancelled” group in the Tasks list, kept out of Today, Done, and the Kanban board. A whole-note task file cancels the same way, writing `status: cancelled` to its frontmatter.'
+  },
+  {
+    title: 'Right-click a task for actions',
+    body:
+      'Every task surface has the same right-click menu: the Tasks list, the Kanban board, the Tasks calendar, and the calendar side panel. It carries Open note, Mark done, Mark in progress, Cancel, @waiting, Forward to note…, due-date presets (today / tomorrow / next week / clear), priority, and Delete, with the keyboard equivalent shown beside each one so the menu doubles as a reminder of the shortcut. Right-clicking also moves the cursor to that task, so the menu and the keyboard always act on the same row. The menu takes typing as a filter: right-click, type “prio”, and only the priority entries stay. Editing a task inline is offered on the calendar surfaces, which have an edit field; elsewhere “Open note” takes you to the line.'
+  },
+  {
+    title: 'Mark a task in progress',
+    body:
+      'A task you have started but not finished can say so: `- [/]`. Write it directly, run “Mark Task In Progress” from the command palette with the cursor on a task, or press `i` on a task in the Tasks list (press `i` again to set it back to open). It renders as a half-filled box in the editor and the reading view. Unlike forwarded or cancelled, an in-progress task is still live work: it keeps its place in Today, stays on the calendar and the Kanban board, and rolls forward with your unfinished tasks when you roll over a daily note, `/` and all. A whole-note task file uses `status: in-progress` in its frontmatter (`doing`, `started` and `wip` are read the same way).'
+  },
+  {
+    title: 'Subtask progress on the parent',
+    body:
+      'A parent task with subtasks shows how far along they are: a `2/5` chip sits at the end of the parent line in the editor and the reading view, turning green when every child is done. The count is derived while rendering and is never written into the markdown, so it stays correct no matter which app last edited the file. Direct children only, one nesting level down, and a grandchild rolls into its own parent. Cancelled (`- [-]`) and forwarded (`- [>]`) children leave the count entirely; an in-progress child (`- [/]`) counts as not yet done.'
   },
   {
     title: 'Style completed tasks',
@@ -257,7 +317,17 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'Moving notes is path-first',
     body:
-      'Use the note context menu, search `move` or `mv` in the command palette, or run `:move` / `:mv` from the ex line to move the active note into Inbox or Archive. With no argument, the command opens the folder picker; with a target like `:mv archive/Reference` or `:move inbox/Work`, it moves the note directly. The move prompt autocompletes folder paths, so you can type and Tab through existing destinations instead of dragging.'
+      'Use the note context menu, search `move` or `mv` in the command palette, or run `:move` / `:mv` from the ex line to move the active note into Inbox or Archive. With no argument, the command opens the folder picker; with a target like `:mv archive/Reference` or `:move inbox/Work`, it moves the note directly. The move prompt autocompletes folder paths, so you can type and Tab through existing destinations instead of dragging. “Duplicate” (palette or context menu) copies a note in place, appending “ (copy)” to the name.'
+  },
+  {
+    title: 'Renaming a note fixes its links',
+    body:
+      'Rename a note and every `[[wikilink]]` pointing at it across the vault rewrites itself to the new name, so no link goes dead. Every form is handled (`[[Note]]`, `[[Note|alias]]` keeping your display text, `[[Note#heading]]`, `[[Note^block]]`, embeds `![[Note]]`, and path-style `[[folder/Note]]`), anything inside fenced or inline code is skipped, and only links that actually resolved to that note are touched, so notes sharing a title never get cross-wired. It runs in the vault layer, so the editor, the CLI, the MCP tools, and the HTTP API all get it, on desktop and the self-hosted server alike.'
+  },
+  {
+    title: 'The note list sorts, groups, and reveals',
+    body:
+      'The note list header has a sort menu (Name, Updated, Created, or a Manual order; also “Sort Notes: …” in the palette), a “Group by Kind” toggle that separates folders from notes, and “Auto-Reveal Active Note”, which expands a note’s ancestor folders and scrolls it into view in the sidebar whenever you open it.'
   },
   {
     title: 'Command palette mirrors the important tab actions',
@@ -268,6 +338,21 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
     title: 'Slash commands speed up writing',
     body:
       'When you type `/` at the start of a line or after whitespace, ZenNotes opens an inline insert menu for common markdown structures such as headings, bulleted or numbered lists, to-do items, callouts, code blocks, dividers, tables, math blocks, links, images, and even creating a new note page.'
+  },
+  {
+    title: 'Label and fold headings',
+    body:
+      'Settings → Editor → Writing can show H1 through H6 labels before Markdown headings. Every heading also has a disclosure arrow that folds its section. Click the arrow, use Ctrl+Alt+F and Ctrl+Alt+U (Cmd+Option+F and Cmd+Option+U on macOS), or use zc and zo in Vim mode.'
+  },
+  {
+    title: 'Create text replacements',
+    body:
+      'Open Settings → Editor → Text replacements to expand short triggers as you type. The default rule turns `->` into `→`, and you can add symbols, words, or longer phrases. The longest matching trigger wins.'
+  },
+  {
+    title: 'Tune indentation and switch notes quickly',
+    body:
+      'Set the editor tab size from 1 through 8 spaces under Settings → Editor → Writing. Press Ctrl+Tab to switch to the most recently used note, then press it again to alternate between the same two notes.'
   },
   {
     title: 'Callouts highlight the important bits',
@@ -297,7 +382,7 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'Links are actionable',
     body:
-      'Use [[wikilinks]] or markdown links. Following a link — click it, Cmd/Ctrl-click it, or use the follow-link motion (`gd`) in normal mode — opens the note under the cursor and pins PDFs into the reference pane. If the note does not exist yet, following the link offers to create it (after you confirm) rather than leaving a dead link. Prefix a wikilink with `!` to embed rather than link: `![[Note]]` inlines the target note content in the reading view and PDF export — recursively, with cycle protection — so a master note can pull in sub-notes and export to PDF as one document. `![[image.png]]` embeds an image, and `![[drawing.excalidraw]]` embeds an Excalidraw drawing as a PNG preview.'
+      'Use [[wikilinks]] or markdown links. Following a link — click it, Cmd/Ctrl-click it, or use the follow-link motion (`gd`) in normal mode — opens the note under the cursor and pins PDFs into the reference pane. If the note does not exist yet, following the link offers to create it (after you confirm) rather than leaving a dead link. Prefix a wikilink with `!` to embed rather than link: `![[Note]]` inlines the target note content in the reading view and PDF export — recursively, with cycle protection — so a master note can pull in sub-notes and export to PDF as one document. `![[image.png]]` embeds an image and `![[drawing.excalidraw]]` embeds an Excalidraw drawing as a PNG preview; both take optional `|width` or `|WxH` size hints (`![[image.png|300]]`, `![[image.png|600x400]]`), and the markdown form carries the same hint after the alt text (`![caption|300](image.png)`).'
   },
   {
     title: 'Files stay local',
@@ -307,12 +392,17 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'Any CSV is a database',
     body:
-      'A `.csv` file in your vault is a full Notion-style database, with zero new dependencies. The same data shows up as an editable Table (inline cell editing) and as a Board grouped by a select field; add and switch views freely. Fields are typed — text, number, checkbox, date, select, multi-select — and support sort, filter, and a raw-CSV toggle, while every row keeps a stable id so external edits round-trip cleanly. Open any row as a real Markdown note — a “record page” in a per-database folder — whose frontmatter mirrors the row’s properties and whose body is a freeform page. Create one with “New Database” in the command palette or by right-clicking a folder → New database.'
+      'A `.csv` file in your vault is a full Notion-style database, with zero new dependencies. The same data shows up as an editable Table (inline cell editing) and as a Board grouped by a select field; add and switch views freely. Fields are typed — text, number, checkbox, date, select, multi-select, and note link (single or multi) — and support sort, filter, and a raw-CSV toggle, while every row keeps a stable id so external edits round-trip cleanly. Open any row as a real Markdown note — a “record page” in a per-database folder — whose frontmatter mirrors the row’s properties and whose body is a freeform page. Create one with “New Database” in the command palette or by right-clicking a folder → New database.'
+  },
+  {
+    title: 'Databases discover your notes',
+    body:
+      'Database cells can link to the notes you already have instead of hard-coding every value. Typing `[[` in a text cell opens the same note search as the editor and inserts a `[[wikilink]]`. A Note link column (types “Note link” / “Note links” in the field menu) stores wikilinks properly: pick notes from a searchable list, and the saved chips show each note’s title and open it on click. And a Select or Multi-select column can auto-discover its options from your vault: open the column’s `⋯` menu and choose Options: all notes, notes in folder…, or notes with tag… — the cell popover then suggests matching notes live (a meeting database can offer every note in `projects/` as its Project options, say), and anything you pick is saved as an ordinary option so boards and filters keep working. Every picker is fully keyboard-driven: type to search, ↑/↓ or Ctrl+N/P to move, Enter to pick, Escape to close.'
   },
   {
     title: 'The CLI is the bridge to launchers',
     body:
-      'The `zn` command-line tool can list, read, search, capture, edit, archive, trash, inspect tasks, and start the MCP server without the app running. Raycast uses it for search, then uses `zennotes://open` and `zennotes://open-window` links to bring the selected note back into ZenNotes. On macOS, Settings → CLI can install the bundled Raycast extension locally so users do not need to wait for the Raycast Store version.'
+      'The `zn` command-line tool can list, read, search, capture, edit, archive, trash, inspect tasks, work with databases (`zn base list / rows / get / add / set / create` — add rows with record pages, set fields with the grid’s exact semantics, locally or against a self-hosted server), and start the MCP server without the app running. Raycast uses it for search, then uses `zennotes://open` and `zennotes://open-window` links to bring the selected note back into ZenNotes. On macOS, Settings → CLI can install the bundled Raycast extension locally so users do not need to wait for the Raycast Store version.'
   },
   {
     title: 'Excalidraw drawings are first-class files',
@@ -322,22 +412,37 @@ export const HELP_CORE_CONCEPTS: HelpCard[] = [
   {
     title: 'Math, diagrams, and plots render from plain fences',
     body:
-      'Inline `$…$` and display `$$…$$` math render via KaTeX. Beyond math, four fenced block languages turn into live diagrams in preview and split mode: `mermaid` for flow, sequence, state, gantt, and graph diagrams; `tikz` for LaTeX-native coordinate systems, commutative diagrams, and figure-quality plots (the TeX engine runs on-device so no network is required); `jsxgraph` for interactive geometry and function plots driven by a small JSON config; and `function-plot` for compact Cartesian function plotting. Each block is ordinary markdown on disk, so the source remains portable and diffable.'
+      'Inline `$…$` and display `$$…$$` math render via KaTeX by default. Settings ▸ Editor ▸ Math renderer switches the typesetter to Typst, which reads the same `$…$` / `$$…$$` blocks as Typst markup instead of LaTeX (a note’s math is written for whichever engine you pick). Beyond math, four fenced block languages turn into live diagrams in preview and split mode: `mermaid` for flow, sequence, state, gantt, and graph diagrams (and `mermaid` alone also draws inline in the editor, with live preview on: the diagram stands in for the fence until your cursor enters it, which brings the source back for editing); `tikz` for LaTeX-native coordinate systems, commutative diagrams, and figure-quality plots (the TeX engine runs on-device so no network is required); `jsxgraph` for interactive geometry and function plots driven by a small JSON config; and `function-plot` for compact Cartesian function plotting. Each block is ordinary markdown on disk, so the source remains portable and diffable.'
+  },
+  {
+    title: 'Equation environments number themselves',
+    body:
+      'With the KaTeX renderer, each unstarred `\\begin{equation}…\\end{equation}` inside a display math block receives the next number in document order. Numbering stays consistent between the live editor and Preview.'
   },
   {
     title: 'Footer actions expose utility views',
     body:
-      'The sidebar footer gives you direct access to Files, Help, and Settings, so utility screens stay discoverable even when you are new to the app.'
+      'The sidebar footer gives you direct access to Files, Help, and Settings, so utility screens stay discoverable even when you are new to the app. A narrow sidebar degrades the row in steps instead of clipping: first the file count folds into the Files tooltip, then the labels drop and the three actions stand as icons.'
   },
   {
     title: 'Destructive actions ask first',
     body:
-      'Moving a note to Trash now asks for confirmation before anything is deleted from the active workspace, and the Trash view separates restore from permanent delete.'
+      'Moving a note to Trash now asks for confirmation before anything is deleted from the active workspace, and the Trash view separates restore from permanent delete. “Empty Trash” clears the whole bin in one confirmed step, and assets deleted from the Files view land in Trash too, restorable to their original location.'
   },
   {
     title: 'Updates are release-driven',
     body:
       'In-app updates read the published GitHub release feed. That means update checks, download prompts, and release notes are all driven by the same public releases you can open manually from the app menu or command palette.'
+  },
+  {
+    title: 'Workflows plan first and write second',
+    body:
+      'A workflow is a plain `.md` file under `.zennotes/workflows/`: frontmatter plus one pipeline per line, like `good = books | where rating >= 4`. Wires carry sets of notes, so every wire on the canvas shows the live count flowing through it, and the canvas and the text are lossless projections of the same file (layout is computed, so no coordinates ever land in your vault). The engine can only propose changes: running shows the full dry-run diff before anything is applied, applying journals every file\'s pre-run bytes so Undo restores them exactly, and a run that fails midway rolls the whole thing back on its own. There are no code steps, no shell, and no network, which is why a workflow you did not write is safe to read and run. In this release workflows run when you run them: an event or schedule `trigger:` in the frontmatter parses but does not fire yet, running is desktop-only, and the web client shows workflows read-only. The feature is off by default; enable it under Settings → Workflows.'
+  },
+  {
+    title: 'The workflow grammar in one card',
+    body:
+      'Six sources open a set: `all`, `folder inbox`, `tag #book`, `search reading list`, `current`, `selection` (the Trash and Archive stay out unless you name them, like `folder trash`). Twelve steps filter and shape it: `where rating >= 4`, `tagged` / `not-tagged #x`, `in inbox/projects`, `matching inbox/**/*.md`, `contains TODO`, `since 7d`, `sort finished desc`, `limit 25`, `dedupe`, and `union` / `subtract <wire>` to combine named wires. Mutating steps change every note on the wire, always behind the dry-run confirmation: `set status done`, `add-tag` / `remove-tag`, `move`, `rename {{date}}-{{title}}`, `append` / `prepend`, `apply-template`, `archive`, `trash`. Outputs turn the wire into text: `render table title, rating` feeds `write "Log.md"`, `write-section "Log.md" "Finished"`, `create-each "inbox/{{title}}.md"`, `notify`, or `clipboard`, and `call <workflow>` folds another workflow into the same run. `{{title}}`, `{{date}}`, `{{count}}` and any frontmatter field expand per note. Press `?` in the Workflows view for the live reference, with a one-line description and a real example for every step.'
   }
 ]
 
@@ -349,6 +454,7 @@ export const HELP_SHORTCUT_SECTIONS: HelpShortcutSection[] = [
     items: [
       { keys: 'Mod+P', action: 'Search notes', detail: 'Open the note search palette.' },
       { keys: 'Mod+F', action: 'Search notes (non-Vim mode)', detail: 'Open the note search palette directly when Vim mode is off.' },
+      { keys: 'Mod+F (in the editor)', action: 'Find and replace in the note', detail: 'In Edit and Split, open the editor’s find-and-replace bar: Tab moves between the Find and Replace fields, with match-case, whole-word, and regex toggles. Esc closes it.' },
       { keys: 'Shift+Mod+P', action: 'Open commands', detail: 'Open the command palette.' },
       { keys: 'Shift+Mod+N', action: 'New Quick Note', detail: 'Create a quick capture note in the main window and focus its title.' },
       { keys: 'Shift+Mod+Space', action: 'Open quick capture window', detail: 'Open the floating, always-on-top capture window. Bound system-wide (CommandOrControl+Shift+Space by default) so it works over any app; change it under Settings → Editor.' },
@@ -357,10 +463,16 @@ export const HELP_SHORTCUT_SECTIONS: HelpShortcutSection[] = [
       { keys: 'Mod+2', action: 'Toggle connections', detail: 'Toggle the connections panel for the active editor pane.' },
       { keys: 'Mod+Shift+C', action: 'Toggle comments panel', detail: 'Show or hide the Comments panel for the active pane.' },
       { keys: 'Mod+Alt+M', action: 'Add comment', detail: 'Start a comment on the selected text (or the current line) without reaching for the mouse.' },
-      { keys: 'Alt+H / Alt+J / Alt+K / Alt+L', action: 'Focus pane left / down / up / right', detail: 'Always-on pane-focus motions — they work even with Vim mode off and skip the Ctrl+W prefix some Linux setups intercept. (Ctrl+W h/j/k/l still works in Vim mode.)' },
+      { keys: 'Alt+H / Alt+J / Alt+K / Alt+L', action: 'Focus pane left / down / up / right', detail: 'Always-on pane-focus motions — they work even with Vim mode off and skip the Ctrl+W prefix some Linux setups intercept. (Ctrl+W h/j/k/l still works in Vim mode.) Both walk the same cycle, in the order the panels appear on screen: sidebar → note list → editor → connections → comments → outline → calendar, and back again.' },
+      { keys: '↑ / ↓ / Enter / Esc', action: 'Move inside a focused panel', detail: 'Once a panel has focus, the arrows move its row cursor, Home and End jump to the ends, Enter opens the row under the cursor, and Esc (or ←) returns focus to the editor. These work with Vim mode off; the single-key motions (j / k, gg / G) stay Vim-only.' },
       { keys: 'Mod+.', action: 'Toggle Zen mode', detail: 'Hide or restore the app chrome so only the active editor, preview, or split view stays on screen.' },
       { keys: 'Mod+W', action: 'Close active tab', detail: 'Close the current note or virtual tab.' },
+      { keys: 'Ctrl+Tab', action: 'Switch to previous note', detail: 'Switch to the most recently used note. Press again to alternate between the last two notes.' },
+      { keys: 'Alt+1 … Alt+9', action: 'Go to tab 1 through 9', detail: 'Jump straight to a tab by position, browser-style (Ctrl+1 … Ctrl+9 on macOS, where Option types characters and the ⌘ digits are taken). Tab numbers count across panes in the same order gt cycles; rebindable under Settings → Keymaps. Vim users get the same jump as {count}gt. Heads-up for macOS with multiple Spaces: Mission Control claims Ctrl+digit for Switch to Desktop, so rebind here or free the key under System Settings → Keyboard Shortcuts.' },
       { keys: 'Shift+Mod+T', action: 'Reopen closed tab', detail: 'Reopen the most recently closed tab, restoring its position and pinned state. Repeat to walk back through your close history.' },
+      { keys: 'Mod+O', action: 'Open file', detail: 'Desktop only: pick a Markdown file with the native dialog. A file inside a known vault opens against that vault; anything else opens in a standalone external-file window.' },
+      { keys: 'Mod+4 / Mod+5 / Mod+6', action: 'Edit / Split / Preview mode', detail: 'Switch the active note between the raw editor, side-by-side split, and rendered preview.' },
+      { keys: 'Mod+L', action: 'Toggle checkbox', detail: 'Turn the current line into a checkbox and toggle it on repeat. See the “Any line becomes a checkbox” card in Core concepts for the full state rules.' },
       { keys: 'Shift+Mod+E', action: 'Export note as PDF', detail: 'Export the active note as a PDF file.' },
       { keys: 'Mod+=', action: 'Zoom in', detail: 'Scale the whole app up, including chrome, editor, and preview.' },
       { keys: 'Mod+-', action: 'Zoom out', detail: 'Scale the whole app down when the UI feels too large.' },
@@ -396,13 +508,19 @@ export const HELP_SHORTCUT_SECTIONS: HelpShortcutSection[] = [
       { keys: 'Space e', action: 'Toggle left sidebar', detail: 'Show or hide the folder/tag sidebar without touching the mouse.' },
       { keys: 'Space p', action: 'Note outline', detail: 'Jump to any heading in the active note via a searchable overlay.' },
       { keys: 'Space v', action: 'Switch vault', detail: 'Open the command palette directly to the local vault switcher.' },
+      { keys: 'Space a', action: 'Open workflows', detail: 'Open the Workflows view, where saved pipelines over your notes are built and run. Workflows are off by default; turn them on under Settings → Workflows first.' },
+      { keys: 'Space q', action: 'Quick capture window', detail: 'Open the floating, always-on-top capture window, same as the global hotkey.' },
+      { keys: 'Space i', action: 'Insert template into note', detail: 'Pick a template and insert it at the cursor of the active note, instead of creating a new note from it.' },
+      { keys: 'Space c', action: 'Toggle calendar', detail: 'Show or hide the calendar panel for the active pane.' },
+      { keys: 'Space l s', action: 'Toggle favorite', detail: 'Add or remove the active note from the sidebar’s Favorites section. Folders join it from their context menu.' },
       { keys: 'Space, then pause', action: 'Show leader hints', detail: 'If enabled in Settings, open a which-key style guide for the next available leader actions. Sticky mode keeps it open until `Space` or `Esc`.' },
-      { keys: 'Mod+3', action: 'Toggle outline panel', detail: 'Show or hide the persistent outline in the active pane.' },
+      { keys: 'Mod+3', action: 'Toggle outline panel', detail: 'Show or hide the persistent outline in the active pane. Once focused (Ctrl+W l or Alt+L from the editor), j / k — or the arrows — walk the headings, gg / G jump to the first and last, Enter jumps the editor to the heading under the cursor, and Esc hands focus back.' },
       { keys: 'zc / zo', action: 'Fold / unfold heading', detail: 'Collapse or expand the section below the heading at the cursor.' },
+      { keys: 'Ctrl+Alt+F / U', action: 'Fold / unfold heading', detail: 'Collapse or expand the heading section at the cursor with Vim mode on or off. On macOS, use Cmd+Option+F / U.' },
       { keys: 'zM / zR', action: 'Fold / unfold all', detail: 'Collapse or expand every heading section in the note.' },
       { keys: 'Ctrl-o', action: 'Go back', detail: 'Jump to the previous note location in history.' },
       { keys: 'Ctrl-i', action: 'Go forward', detail: 'Jump forward in note history.' },
-      { keys: 'Space h', action: 'Hint mode', detail: 'Show jump labels over clickable targets — links, buttons, sidebar rows, tabs — so you can activate any of them from the keyboard. Works outside insert mode, including in the Tasks and Tags views.' }
+      { keys: 'Space h', action: 'Hint mode', detail: 'Show jump labels over clickable targets — links, buttons, sidebar rows, tabs — so you can activate any of them from the keyboard. Works outside insert mode, including in the Tasks and Tags views. Home-row-mod keyboards work too: a bare modifier tap or an uppercase label no longer cancels the hints.' }
     ]
   },
   {
@@ -496,11 +614,36 @@ export const HELP_SHORTCUT_SECTIONS: HelpShortcutSection[] = [
       { keys: 'Enter / o', action: 'Open current result', detail: 'Open the selected task source note, tagged note, or trashed note.' },
       { keys: 'x', action: 'Toggle task', detail: 'Tasks view only: check or uncheck the selected task. A checked task lingers in place for a couple of seconds before it drops into Done, so you can toggle it again to undo. Space also toggles unless Space is your Vim leader key, in which case it starts a leader sequence.' },
       { keys: '>', action: 'Forward task', detail: 'Tasks list only: forward the selected task to another note. Opens a note picker; the original becomes a forwarded record (`[>]`) linking to the target, and a fresh copy is added there, backlinked home. Forwarded tasks live under a “Forwarded” group.' },
+      { keys: 'i', action: 'Mark task in progress', detail: 'Tasks list only: mark the selected task as started (`- [/]`), or set it back to open. In-progress tasks stay in Today and on the calendar, so the row keeps its place.' },
+      { keys: 'c', action: 'Cancel task', detail: 'Tasks list only: mark the selected task as intentionally abandoned (`- [-]`), or un-cancel it. Cancelled tasks live under a “Cancelled” group, out of Today and Done.' },
+      { keys: 'K / J', action: 'Move task up / down', detail: 'Tasks list only: reorder the selected task within its group. Works with Vim mode on or off.' },
       { keys: 'r', action: 'Restore trashed note', detail: 'Trash view only: restore the selected trashed note.' },
       { keys: 'x / d', action: 'Delete forever', detail: 'Trash view only: permanently delete the selected trashed note after confirmation.' },
       { keys: '/', action: 'Filter the view', detail: 'Focus the local filter box for tasks, tag matches, or trashed notes.' },
       { keys: ':', action: 'Open local ex prompt', detail: 'Run the view-specific command line inside Tasks or Tags.' },
       { keys: 'Esc', action: 'Clear the filter', detail: 'Clears an active filter. These views are tabs, so Esc no longer closes them — close with :q or the ✕ in the tab header.' }
+    ]
+  },
+  {
+    id: 'workflows-view',
+    title: 'Workflows view',
+    description:
+      'Off by default; enable under Settings → Workflows. The single-letter keys below are Vim-mode only, like every list in the app; arrows, Enter, and Esc always work, and Shift+F10 (or the ContextMenu key) opens the row menu in either mode.',
+    items: [
+      { keys: 'j / k', action: 'Move between workflows', detail: 'Step through the list on the left. g g / G jump to the first and last.' },
+      { keys: 'Enter', action: 'Open for editing', detail: 'Open the selected workflow on the canvas.' },
+      { keys: 'R', action: 'Run', detail: 'Plan the selected workflow and show the dry-run confirmation: every change grouped and counted before anything is written. Applying journals each file, so the run can be undone byte for byte from the receipt.' },
+      { keys: 't', action: 'Toggle draft / active', detail: 'A draft is saved but inert: it cannot run, from here or from the palette. Activating a workflow that writes lists exactly what it changes first.' },
+      { keys: 'a', action: 'Add a step', detail: 'Start a new line with a source, picked from the registry with its arguments explained. To insert into an existing line, use Add step after on the node itself.' },
+      { keys: 'e', action: 'Edit as text', detail: 'Flip between the canvas and the raw file. Both edit the same workflow; neither is the "real" one.' },
+      { keys: 'n', action: 'New workflow', detail: 'Open the recipe gallery. Every recipe is a plain file that copies into your vault and opens in this same editor. Press x on a recipe to hide it from the gallery; hide or restore them all under Settings → Workflows.' },
+      { keys: 'y / p', action: 'Copy / import via clipboard', detail: 'y puts the selected workflow file on the clipboard as text; p reviews whatever workflow text is on the clipboard before it can land, always as a manual-trigger draft.' },
+      { keys: 'd', action: 'Delete', detail: 'Delete the selected workflow file, after confirmation.' },
+      { keys: 'm', action: 'Row menu', detail: 'Open the context menu for the selected workflow: duplicate, export, reveal, and the rest.' },
+      { keys: '?', action: 'Syntax reference', detail: 'Every step the format knows, with a real example each.' },
+      { keys: 'r', action: 'Reload from disk', detail: 'Re-read the workflows directory, for files that arrived by sync or by hand.' },
+      { keys: 'Shift/⌘ + click', action: 'Select several steps', detail: 'On the canvas, hold Shift (or ⌘ on macOS, Ctrl elsewhere) and click to add a step to the selection, or drag a box across the canvas with Shift held. Dragging any member of the group moves the whole group together. The options panel edits one step at a time, so it steps aside while a group is selected; Esc clears the selection.' },
+      { keys: 'Mod+A', action: 'Select every step', detail: 'On the canvas, select all the steps in this workflow, ready to be moved as one. Inside a text box it still selects the text.' }
     ]
   },
   {
@@ -511,9 +654,15 @@ export const HELP_SHORTCUT_SECTIONS: HelpShortcutSection[] = [
       { keys: 'h / j / k / l', action: 'Move the cell cursor', detail: 'Arrow keys also work. 0 / ^ jump to the first column, $ to the last.' },
       { keys: 'H / L', action: 'Move the current column left / right', detail: 'Reorders columns from the keyboard and the cursor follows. You can also drag a column header, or use “Move left / Move right” in the field menu (⋯).' },
       { keys: 'g g / G', action: 'Jump to first / last row', detail: 'Fast travel within the current column.' },
+      { keys: 'k (into header)', action: 'Rename a field', detail: 'Press k up onto the column-header row, then Enter / i to rename the field, or m to open its column menu.' },
       { keys: 'i / Enter', action: 'Edit the cell', detail: 'On a checkbox cell this toggles it instead of opening an editor.' },
+      { keys: '[[ (in a text cell)', action: 'Link a note from the cell', detail: 'While editing a text cell, `[[` opens the same note search as the editor; ↑/↓ or Ctrl+N/P move, Enter inserts the `[[wikilink]]`, Escape closes the list and keeps typing.' },
+      { keys: '↑ / ↓ · Enter (in a picker)', action: 'Pick options and notes', detail: 'Select, Multi-select, and Note link popovers are searchable lists: type to filter, arrows or Ctrl+N/P move the highlight, Enter picks it (with nothing highlighted, Enter adds the typed text as a new option), Escape closes.' },
+      { keys: 'm', action: 'Open the row menu', detail: 'On a cell, open the right-click menu for that record (Open, Delete, and the rest).' },
       { keys: 'Space / x', action: 'Select the row', detail: 'Toggle the row’s selection for bulk actions.' },
       { keys: 'o', action: 'Open the record page', detail: 'Open the row as a Markdown note in the per-database folder.' },
+      { keys: 'Ctrl-o', action: 'Jump back to the grid', detail: 'From a record page, return to the database grid, whether you opened it as a .csv file or via New Database.' },
+      { keys: 'Ctrl-w k / j / h / l', action: 'Move to tabs or panes', detail: 'Move between the grid, the tab strip, and split panes, exactly like from the editor.' },
       { keys: 'a', action: 'Add a row', detail: 'Append a new empty record and move the cursor to it.' },
       { keys: 'd d', action: 'Delete the row', detail: 'Remove the record at the cursor.' },
       { keys: 'Esc', action: 'Clear selection / leave the grid', detail: 'Clears a multi-row selection first, then blurs the grid.' }
@@ -623,9 +772,14 @@ export const HELP_VIM_COMMANDS: HelpExCommand[] = [
     detail: 'Keep only the active tab in the current pane.'
   },
   {
-    command: ':qa / :quitall / :xa / :wa',
+    command: ':qa / :quitall / :xa / :wqa',
     summary: 'Close every tab everywhere',
-    detail: 'Closes all tabs across all panes. The write aliases act the same way here.'
+    detail: 'Closes all tabs across all panes. The write-and-quit aliases save on the way out.'
+  },
+  {
+    command: ':wa / :wall',
+    summary: 'Write every unsaved note',
+    detail: 'Saves all dirty notes across all panes without closing anything, like vim.'
   },
   {
     command: ':help / :h',
@@ -680,7 +834,7 @@ export const HELP_VIM_COMMANDS: HelpExCommand[] = [
   {
     command: '<Space> h',
     summary: 'Leader hint mode',
-    detail: 'Show jump labels over clickable targets — links, buttons, sidebar rows, tabs — to activate any of them from the keyboard. Works in the editor, sidebar, and the Tasks and Tags views.'
+    detail: 'Show jump labels over clickable targets — links, buttons, sidebar rows, tabs — to activate any of them from the keyboard. Works in the editor, sidebar, and the Tasks and Tags views, and survives home-row-mod keyboards: a bare modifier tap or an uppercase label no longer cancels the hints.'
   },
   {
     command: '<Space> o',
@@ -713,6 +867,26 @@ export const HELP_VIM_COMMANDS: HelpExCommand[] = [
     detail: 'Open the template picker to create a note from a built-in or custom template.'
   },
   {
+    command: '<Space> i',
+    summary: 'Leader insert template',
+    detail: 'Pick a template and insert it at the cursor of the active note, instead of creating a new note from it.'
+  },
+  {
+    command: '<Space> q',
+    summary: 'Leader quick capture',
+    detail: 'Open the floating, always-on-top capture window, same as the global hotkey.'
+  },
+  {
+    command: '<Space> c',
+    summary: 'Leader toggle calendar',
+    detail: 'Show or hide the calendar panel for the active pane.'
+  },
+  {
+    command: '<Space> l s',
+    summary: 'Leader toggle favorite',
+    detail: 'Add or remove the active note from the sidebar’s Favorites section.'
+  },
+  {
     command: '<Space> d',
     summary: "Leader today's daily note",
     detail: 'Open or create today’s daily note (when daily notes are enabled in Settings → Vault → Periodic notes).'
@@ -726,6 +900,21 @@ export const HELP_VIM_COMMANDS: HelpExCommand[] = [
     command: '<Space> m',
     summary: "Leader this month's note",
     detail: 'Open or create this month’s note (when monthly notes are enabled in Settings → Vault → Periodic notes).'
+  },
+  {
+    command: 'gt / gT',
+    summary: 'Next / previous tab',
+    detail: 'Move through the tabs in the active pane. Also `:tabnext` / `:tabprevious` on the ex line, and rebindable under Settings → Keymaps.'
+  },
+  {
+    command: '{count}gt / {count}gT',
+    summary: 'Jump straight to a tab',
+    detail: 'Vim-style direct tab selection: `2gt` goes to tab 2, `5gt` to tab 5 (a count past the end lands on the last tab). `{count}gT` walks that many tabs back instead. Tab numbers count across panes in the same order plain `gt` cycles.'
+  },
+  {
+    command: ':closepanel / :closep',
+    summary: 'Close the right panel',
+    detail: 'Dismiss whichever right-hand panel is open (connections, outline, comments, calendar). Also a “Close Right Panel” command in the palette.'
   },
   {
     command: ':outline',
@@ -777,10 +966,17 @@ export const HELP_SETTINGS: HelpSettingsSection[] = [
       { label: 'Leader key hints', detail: 'Show a which-key style guide after pressing the configured Leader key so available leader actions stay visible while you decide. This setting is only available when Vim mode is enabled.' },
       { label: 'Leader hint behavior', detail: 'Choose whether leader hints auto-hide after a timeout or stay open until you dismiss them with the Leader key or Esc. These controls only appear when Vim mode is enabled.' },
       { label: 'Leader hint duration', detail: 'When behavior is Timed, control how long the which-key overlay stays visible and how long the pending leader sequence remains active after pressing the Leader key. This setting is only available in Vim mode.' },
+      { label: 'Scroll offset', detail: 'Vim scrolloff: keep N lines visible above and below the cursor so it never hugs the top or bottom edge. Default 0 (off). Only applies with Vim mode on.' },
+      { label: 'Smooth preview scroll', detail: 'Animate Ctrl+D / Ctrl+U half-page scrolling in the preview pane.' },
       { label: 'Vault text search backend and binary paths', detail: 'Choose Auto, the built-in searcher, ripgrep, or fzf for vault-wide text search. Auto prefers system tools when they are installed and falls back cleanly when they are not, you can provide explicit binary paths for ripgrep or fzf if they are not on your PATH, and Settings now shows the resolved runtime backend that will actually be used.' },
-      { label: 'Live preview', detail: 'Hide markdown syntax on lines you are not actively editing.' },
+      { label: 'Live preview', detail: 'Hide markdown syntax on lines you are not actively editing. Also draws math, tables, and `mermaid` diagrams in place; each turns back into its source when the cursor enters it.' },
       { label: 'Render tables in live preview', detail: 'Show Markdown tables as interactive WYSIWYG widgets (edit cells, drag, right-click/`m` menu). Turn it off to keep tables as plain markdown text so you can edit them with the keyboard and Vim motions like any other line. When widgets are on, Arrow keys (and h/j/k/l) navigate cells; Shift+V then Shift+J/Shift+K move whole lines in the raw source.' },
-      { label: 'Note tabs', detail: 'Enable or disable tab-based editing and split-friendly note workflows.' },
+      { label: 'Sync title heading on rename', detail: 'On by default. A new note is created as `# <title>`, and with this on a rename carries that heading along — rename `Untitled` to `Groceries` and line one becomes `# Groceries`, from the breadcrumb, the sidebar, or the note list alike. Only an existing top-level `#` heading is rewritten and one is never invented, so a note that opens with prose, a list, or a `##` heading is untouched; deleting the `#` line opts that note out permanently. The heading is found after any frontmatter, and the rest of the note is left byte for byte as it was.' },
+      { label: 'Heading level labels', detail: 'Show H1 through H6 badges before headings. Heading fold arrows stay available whether labels are on or off.' },
+      { label: 'Tab size', detail: 'Choose how many spaces a tab occupies when rendered and when indenting in every Markdown editor surface. Nested list levels also render this many columns deep, whatever the note’s source spacing, so levels stay tellable apart on any monitor.' },
+      { label: 'Indent guides', detail: 'Draw a vertical guide line at each nested list level in the editor, at the Tab size columns. On by default; the raw markup is never changed either way.' },
+      { label: 'Text replacements', detail: 'Enable or disable typed expansions and manage the trigger-to-text rules under the dedicated Text replacements tab.' },
+      { label: 'Note tabs and wrap tabs', detail: 'Enable or disable tab-based editing and split-friendly note workflows, and wrap the tab strip onto extra rows when it overflows.' },
       { label: 'Word wrap', detail: 'Wrap long lines to the editor width or let them scroll horizontally.' },
       { label: 'Blinking cursor', detail: 'Blink the editor caret and the Vim block cursor, or turn it off for a solid cursor — for example to match the macOS "Prefer non-blinking cursor" accessibility setting. Applies to both the insert-mode caret and the Vim normal-mode block cursor.' },
       { label: 'PDFs in edit mode', detail: 'Choose between compact PDF cards or full inline PDF embeds while writing.' },
@@ -818,7 +1014,9 @@ export const HELP_SETTINGS: HelpSettingsSection[] = [
       { label: 'Daily notes', detail: "Enable a daily-notes workflow, choose a directory pattern, naming pattern, locale, and template so each day’s note starts in the right place. Supported tokens are `yyyy`, `yy`, `M`, `MM`, `MMM`, `MMMM`, `d`, `dd`, `EEE`, `EEEE`, `w`, and `ww`; quote literal words like `'Daily Notes'/yyyy/MM-MMM`. Open today’s note with `Space d`, `:daily`, or the command palette. Two task options live here too: “Tasks are due on the note’s date” makes tasks in a daily note show on the calendar for that day (on by default), and “Roll over unfinished tasks to today” moves every unchecked task from past daily notes into today when you open it (off by default; also runnable from the command palette)." },
       { label: 'Weekly notes', detail: "Enable weekly notes with a directory pattern, naming pattern, locale, and template. Weekly patterns support the same tokens as daily notes plus ISO week `w` and `ww`; the default title pattern is `yyyy-'W'ww`. Open this week’s note with `Space w`, `:weekly`, or the command palette." },
       { label: 'Monthly notes', detail: 'Enable monthly notes with a directory pattern, naming pattern, locale, and template. It creates one note per calendar month, handy for monthly reviews and reflections. The default title pattern is `yyyy-MM` (e.g. `2026-07`). Open this month’s note with `Space m`, `:monthly`, or the command palette. Each notes section in Settings now collapses its fields when its toggle is off.' },
-      { label: 'System folder labels', detail: 'Rename how Inbox, Quick Notes, Archive, and Trash appear in the UI without renaming the real folders on disk.' }
+      { label: 'Folder Paths', detail: 'Point any of the four system folders (Inbox, Quick Notes, Archive, Trash) at a directory of your choosing, labels included; stored as `systemFolderPaths` in `vault.json` so the vault stays portable. Relabeling without moving anything on disk works too.' },
+      { label: 'Folder icons', detail: 'Right-click a folder in the sidebar and choose a custom icon that follows the current theme colors.' },
+      { label: 'Saved Remote Workspaces', detail: 'Save multiple remote servers or vaults, reconnect from Settings or the command palette, and edit or remove them later. When connected remotely, Settings also exposes Change Remote Vault…, Return to Local Vault, and Open Local Vault….' }
     ]
   },
   {
@@ -827,6 +1025,7 @@ export const HELP_SETTINGS: HelpSettingsSection[] = [
       { label: 'Template library', detail: 'Browse every template — built-in and custom. Built-ins cover engineering (ADR, RFC, Bug Report, Postmortem, Meeting Notes, 1:1) and personal use (Daily Note, Weekly Review, Reading Notes, Journal, Project Kickoff, To-do).' },
       { label: 'Create a custom template', detail: 'Author a new template as markdown with optional frontmatter (`name`, `description`, `category`, `titleTemplate`, `targetFolder`, `targetSubpath`) and variables like `{{title}}`, `{{date}}`, `{{date:FORMAT}}`, `{{time}}`, `{{week}}`, and `{{cursor}}`. It is saved as a `.md` file in `.zennotes/templates/`.' },
       { label: 'Edit or reset built-ins', detail: 'Press Edit on a built-in to fork an editable copy that shadows the original everywhere; Reset removes the copy and restores the built-in. Custom templates can be edited or deleted directly.' },
+      { label: 'Remove or restore built-ins', detail: 'Hide all the shipped templates with “Remove Built-in Templates” (a button here, or the command palette; it asks first), and bring them back with “Restore Built-in Templates”. Your custom templates, and anything already pointing at a built-in by id, keep working.' },
       { label: 'Where templates appear', detail: 'Use a template via the picker (`Space t` / `:template` / “New Note from Template…”), from a folder’s right-click “New from template”, or as the assigned daily/weekly note template. Custom templates require a local vault; built-ins work everywhere.' }
     ]
   },
@@ -838,6 +1037,19 @@ export const HELP_SETTINGS: HelpSettingsSection[] = [
       { label: 'Paths with spaces', detail: 'Quote note paths like `zn read "hellointerview/system design.md"` or pass them with `--path "hellointerview/system design.md"` so your shell keeps the path as one argument.' },
       { label: 'Raycast on macOS', detail: 'The Raycast extension requires `zn` and can be installed locally from this settings page. ZenNotes copies the bundled extension into app data, installs dependencies, builds it, and imports it into Raycast. It searches with `zn list --json`, then opens notes in ZenNotes through `zennotes://open` or `zennotes://open-window` and exposes archive, unarchive, trash, reveal, copy path, and copy wikilink actions from Raycast.' },
       { label: 'Uninstall', detail: 'Removes only the ZenNotes-managed symlink — never an arbitrary unmanaged binary named `zn`. The CLI stays inside the app bundle for next time.' }
+    ]
+  },
+  {
+    title: 'Tasks',
+    items: [
+      { label: 'Show tasks from archived notes', detail: 'Off by default: archiving a note retires its tasks from the Tasks list, calendar, and Kanban. Turn this on to keep them visible everywhere, Archive column included. The raw key is `show_archived_tasks` in `config.toml`.' },
+      { label: 'Kanban statuses', detail: 'Define the ordered columns of the custom-status Kanban board here; `kanban_statuses` under `[view]` in `config.toml` is the file-level equivalent.' }
+    ]
+  },
+  {
+    title: 'Workflows',
+    items: [
+      { label: 'Workflows', detail: 'Off by default. Turn it on to add the Workflows view (sidebar row, palette commands, and the Space a leader binding in Vim mode): saved, repeatable pipelines over your notes, edited on a canvas and run behind a dry-run confirmation with whole-run undo. Turning it off hides all of that again and closes the view if it is open.' }
     ]
   },
   {
@@ -867,6 +1079,11 @@ export const HELP_CLI: HelpCard[] = [
     title: 'No app required',
     body:
       'The CLI reads from the same vault folder the desktop app uses, so it works whether or not ZenNotes is open. When the app is open, file watchers pick up CLI changes automatically — captures and edits show up live in the sidebar.'
+  },
+  {
+    title: 'Point it at a self-hosted server',
+    body:
+      'Every command works against a vault behind a ZenNotes server, not just one on this disk. Once you have connected the desktop app to a server, that server is nameable from the terminal: `zn list --server home`, `zn capture "..." --server home`. `zn vault list` shows local vaults and servers together, and `--vault <name>` resolves either kind, so the short name you already type keeps working. Pass a URL directly for a server you have not saved — `zn list --server 192.168.1.10:7878` — and `--token` for its auth token. For CI or a headless box, set `ZENNOTES_SERVER` and `ZENNOTES_REMOTE_TOKEN` instead of storing anything on disk. `zn open` is the one exception: it hands file paths to the desktop app, so it needs a local vault.'
   },
   {
     title: 'Capture is the gateway drug',

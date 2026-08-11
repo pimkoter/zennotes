@@ -18,6 +18,7 @@ import { history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { vimAwareDefaultKeymap, vimAwareMarkdownKeymap } from '../lib/cm-vim-default-keymap'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { resolveCodeLanguage } from '../lib/cm-code-languages'
+import { customCodeFenceHighlightExtension } from '../lib/cm-custom-code-languages'
 import { applyVimInsertEscape } from '../lib/vim-insert-escape'
 import { markdownListIndentPlugin } from '../lib/cm-markdown-list-indent'
 import { appMarkdownSnippetExtension } from '../lib/markdown-snippets-config'
@@ -34,6 +35,7 @@ import {
   loadFloatingPrefs,
   paperHighlight
 } from './FloatingNoteApp'
+import { editorTabSize } from '../lib/editor-tab-size'
 
 const SAVE_DEBOUNCE_MS = 350
 const programmatic = Annotation.define<boolean>()
@@ -114,12 +116,14 @@ export function ExternalFileApp(): JSX.Element {
           new Compartment().of(prefs.vimMode ? vim() : []),
           history(),
           drawSelection(),
+          editorTabSize(prefs.editorTabSize),
           highlightActiveLine(),
           prefs.wordWrap ? EditorView.lineWrapping : [],
           markdown({ base: markdownLanguage, codeLanguages: resolveCodeLanguage, addKeymap: false }),
+          customCodeFenceHighlightExtension,
           vimAwareMarkdownKeymap,
           markdownListIndentPlugin,
-          headingFolding(),
+          headingFolding({ showLevelLabels: prefs.showHeadingLevelLabels }),
           syntaxHighlighting(paperHighlight),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           prefs.livePreview ? livePreviewPlugin : [],

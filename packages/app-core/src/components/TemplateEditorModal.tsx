@@ -15,17 +15,20 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { yamlFrontmatter } from '@codemirror/lang-yaml'
 import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
-import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
+import { autocompletion } from '@codemirror/autocomplete'
 import { useStore } from '../store'
 import { parseFrontmatter, slugifyTemplateName } from '@shared/template-files'
 import { renderTemplate } from '../lib/template-render'
 import { resolveCodeLanguage } from '../lib/cm-code-languages'
+import { customCodeFenceHighlightExtension } from '../lib/cm-custom-code-languages'
 import { markdownListIndentPlugin } from '../lib/cm-markdown-list-indent'
 import { appMarkdownSnippetExtension } from '../lib/markdown-snippets-config'
+import { headingFolding } from '../lib/cm-heading-fold'
+import { editorTabSize } from '../lib/editor-tab-size'
 import { templateVariableSource, TEMPLATE_VARIABLES } from '../lib/cm-template-variables'
 import { templateSlashCommandSource, slashCommandRender } from '../lib/cm-slash-commands'
 import { calloutTypeSource } from '../lib/cm-callouts'
-import { completionNavKeymap } from '../lib/cm-completion-nav'
+import { completionKeymapForEditor, completionNavKeymap } from '../lib/cm-completion-nav'
 import { Modal } from './ui/Modal'
 import { Button } from './ui/Button'
 
@@ -116,6 +119,7 @@ export function TemplateEditorModal({
         new Compartment().of(vimModeRef.current ? vim() : []),
         history(),
         drawSelection(),
+        editorTabSize(useStore.getState().editorTabSize),
         highlightActiveLine(),
         EditorView.lineWrapping,
         // Parse the leading `---…---` block as YAML frontmatter and the rest as
@@ -127,14 +131,21 @@ export function TemplateEditorModal({
             addKeymap: false
           })
         }),
+        customCodeFenceHighlightExtension,
         vimAwareMarkdownKeymap,
         markdownListIndentPlugin,
+        headingFolding({
+          showLevelLabels: useStore.getState().showHeadingLevelLabels
+        }),
         syntaxHighlighting(templateHighlight),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         // Render autocomplete tooltips on <body> so the modal's overflow:hidden
         // doesn't clip the slash / variable dropdowns.
         tooltips({ parent: document.body }),
         autocompletion({
+          // See EditorPane: skip the stock keymap so mac `Alt-`` / `Alt-i`
+          // don't swallow those characters on AltGr-style layouts (#429).
+          defaultKeymap: false,
           override: [templateSlashCommandSource, calloutTypeSource, templateVariableSource],
           activateOnTyping: true,
           icons: false,
@@ -147,7 +158,7 @@ export function TemplateEditorModal({
         completionNavKeymap,
         keymap.of([
           indentWithTab,
-          ...completionKeymap,
+          ...completionKeymapForEditor,
           ...vimAwareDefaultKeymap(vimModeRef.current),
           ...historyKeymap
         ]),

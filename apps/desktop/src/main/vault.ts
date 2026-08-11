@@ -46,9 +46,12 @@ import {
   VaultTextSearchBackendResolved,
   VaultTextSearchToolPaths,
   VaultTextSearchMatch,
+  VaultChangeEvent,
   VaultInfo
 } from '@shared/ipc'
 import { DEMO_TOUR_DIR } from '@shared/demo-tour'
+import { FRONTMATTER_BLOCK_RE, frontmatterTags } from '@shared/frontmatter'
+import { IMAGE_FILE_EXTENSIONS, pastedImageFilename } from '@shared/pasted-image'
 import {
   DATABASE_SIDECAR_SUFFIX,
   databaseCsvPathFor,
@@ -67,6 +70,20 @@ import {
   isObsidianExcalidrawMarkdown
 } from '@shared/excalidraw'
 import { DEMO_TOUR_ASSETS, DEMO_TOUR_NOTES } from './demo-tour-data'
+import {
+  DEFAULT_FOLDER_PATHS,
+  describeSystemFolderPathIssue,
+  normalizeSystemFolderPaths,
+  resolveFolderPath,
+  systemFolderForDirName,
+  type SystemFolderPaths
+} from '@shared/system-folder-paths'
+import { normalizeTasksExcludedFolders } from '@shared/tasks-excluded-folders'
+import {
+  isTypstPreamblePath,
+  normalizeTypstPreambleSettings,
+  resolveTypstPreambleFolder
+} from '@shared/typst-preamble-folder'
 
 const CONFIG_FILE = 'zennotes.config.json'
 const FOLDERS: NoteFolder[] = ['inbox', 'quick', 'archive', 'trash']
@@ -85,37 +102,19 @@ const DELETED_ASSETS_DIR = 'deleted-assets'
 const DELETED_ASSET_META = '.zn-deleted.json'
 const VAULT_SETTINGS_FILE = 'vault.json'
 const NOTE_META_CACHE_FILE = 'note-meta-cache-v1.json'
-const NOTE_META_CACHE_VERSION = 2
+const NOTE_META_CACHE_VERSION = 3
 const NOTE_COMMENTS_DIR = 'comments'
 const NOTE_COMMENTS_SUFFIX = '.comments.json'
 const RESERVED_ROOT_NAMES = new Set<string>([...FOLDERS, ...ATTACHMENTS_DIRS, INTERNAL_VAULT_DIR])
-const HIDDEN_PRIMARY_ROOT_NAMES = new Set<string>([
-  'quick',
-  'archive',
-  'trash',
+// The subset that stays reserved however the system folders are remapped:
+// asset dirs and our own internal dir are never user note folders, while
+// `inbox`/`archive`/… are reserved only while a system folder actually
+// resolves there (see systemFolderForDirName).
+const RESERVED_NON_SYSTEM_ROOT_NAMES = new Set<string>([
   ...ATTACHMENTS_DIRS,
   INTERNAL_VAULT_DIR
 ])
-const IMAGE_EXTENSIONS = new Set([
-  '.apng',
-  '.avif',
-  '.gif',
-  '.jpeg',
-  '.jpg',
-  '.png',
-  '.svg',
-  '.webp'
-])
-const PASTED_IMAGE_MIME_EXTENSIONS: Record<string, string> = {
-  'image/apng': '.apng',
-  'image/avif': '.avif',
-  'image/gif': '.gif',
-  'image/jpeg': '.jpg',
-  'image/jpg': '.jpg',
-  'image/png': '.png',
-  'image/svg+xml': '.svg',
-  'image/webp': '.webp'
-}
+const IMAGE_EXTENSIONS = IMAGE_FILE_EXTENSIONS
 const PDF_EXTENSIONS = new Set(['.pdf'])
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.wav'])
 const VIDEO_EXTENSIONS = new Set(['.m4v', '.mov', '.mp4', '.ogv', '.webm'])
@@ -255,6 +254,10 @@ const noteMetaCache = new Map<
 >()
 const loadedPersistedNoteMetaCacheRoots = new Set<string>()
 const noteMetaCachePersistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const vaultSettingsCache = new Map<string, { settings: VaultSettings; mtimeMs: number }>()
+// Keyed by root, not by vault.json's mtime: what it answers depends on the
+// vault's ROOT ENTRIES, which vault.json's mtime says nothing about.
+const inferredPrimaryCache = new Map<string, PrimaryNotesLocation>()
 
 export interface PersistedWindowState {
   x: number
@@ -806,6 +809,13 @@ function cloneVaultViewSettings(view: VaultViewSettings): VaultViewSettings {
           )
         }
       : {}),
+    ...(view.kanbanCardOrder
+      ? {
+          kanbanCardOrder: Object.fromEntries(
+            Object.entries(view.kanbanCardOrder).map(([column, keys]) => [column, [...keys]])
+          )
+        }
+      : {}),
     ...(view.systemFolderLabels ? { systemFolderLabels: { ...view.systemFolderLabels } } : {})
   }
 }
@@ -981,6 +991,7 @@ function normalizeVaultSettings(
       },
       drawingsLocation: { mode: 'primary' },
       databasesLocation: { mode: 'primary' },
+      tasksLocation: { mode: 'primary' },
       folderIcons: {},
       folderColors: {},
       favorites: []
@@ -1016,10 +1027,14 @@ function normalizeVaultSettings(
     } | null
     drawingsLocation?: unknown
     databasesLocation?: unknown
+    tasksLocation?: unknown
     folderIcons?: Record<string, unknown> | null
     folderColors?: Record<string, unknown> | null
     favorites?: unknown
     view?: unknown
+    systemFolderPaths?: unknown
+    tasks?: unknown
+    typstPreambles?: unknown
   }
   const folderIcons: Record<string, FolderIconId> = {}
   if (candidate.folderIcons && typeof candidate.folderIcons === 'object') {
@@ -1069,11 +1084,26 @@ function normalizeVaultSettings(
     },
     drawingsLocation: normalizeFileLocation(candidate.drawingsLocation),
     databasesLocation: normalizeFileLocation(candidate.databasesLocation),
+    tasksLocation: normalizeFileLocation(candidate.tasksLocation),
     folderIcons,
     folderColors: normalizeFolderColors(candidate.folderColors),
     favorites: normalizeFavorites(candidate.favorites),
-    view: normalizeVaultViewSettings(candidate.view)
+    view: normalizeVaultViewSettings(candidate.view),
+    systemFolderPaths: normalizeSystemFolderPaths(candidate.systemFolderPaths),
+    tasks: normalizeTasksSettings(candidate.tasks),
+    typstPreambles: normalizeTypstPreambleSettings(candidate.typstPreambles)
   }
+}
+
+/** Carry the Tasks-system settings (#458) through the round-trip: a validated
+ *  excludedFolders list, or undefined when nothing survives so vault.json
+ *  stays free of empty stubs. */
+function normalizeTasksSettings(raw: unknown): VaultSettings['tasks'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const excluded = normalizeTasksExcludedFolders(
+    (raw as { excludedFolders?: unknown }).excludedFolders
+  )
+  return excluded.length > 0 ? { excludedFolders: excluded } : undefined
 }
 
 /** Carry the per-vault view overrides (#292) through the round-trip, keeping
@@ -1092,6 +1122,9 @@ function normalizeVaultViewSettings(raw: unknown): VaultViewSettings | undefined
   }
   if (c.kanbanColumnOrder && typeof c.kanbanColumnOrder === 'object') {
     view.kanbanColumnOrder = c.kanbanColumnOrder as Record<string, string[]>
+  }
+  if (c.kanbanCardOrder && typeof c.kanbanCardOrder === 'object') {
+    view.kanbanCardOrder = c.kanbanCardOrder as Record<string, string[]>
   }
   if (typeof c.autoReveal === 'boolean') view.autoReveal = c.autoReveal
   if (c.systemFolderLabels && typeof c.systemFolderLabels === 'object') {
@@ -1214,16 +1247,30 @@ function duplicateFolderIcons(
   return next
 }
 
-async function inferPrimaryNotesLocation(root: string): Promise<PrimaryNotesLocation> {
+async function inferPrimaryNotesLocation(
+  root: string,
+  systemFolderPaths?: SystemFolderPaths | null
+): Promise<PrimaryNotesLocation> {
   let entries: Dirent[]
   try {
     entries = await fs.readdir(root, { withFileTypes: true })
   } catch {
     return DEFAULT_VAULT_SETTINGS.primaryNotesLocation
   }
+  // Remapped system folders (vault.json `systemFolderPaths`) are system
+  // directories, not loose user content: without this, a vault whose inbox is
+  // `01 - Entry` reads as a flat root-mode vault and the "notes at your vault
+  // root aren't shown" banner fires on a perfectly configured vault.
+  const customDirs = new Set<string>()
+  if (systemFolderPaths) {
+    for (const value of Object.values(systemFolderPaths)) {
+      if (value) customDirs.add(value.toLowerCase())
+    }
+  }
   for (const entry of entries) {
     if (entry.name.startsWith('.')) continue
     if (RESERVED_ROOT_NAMES.has(entry.name)) continue
+    if (customDirs.has(entry.name.toLowerCase())) continue
     if (entry.isDirectory()) return 'root'
     if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) return 'root'
   }
@@ -1241,7 +1288,7 @@ async function inferPrimaryNotesLocation(root: string): Promise<PrimaryNotesLoca
 export async function rootContentHiddenByInboxMode(root: string): Promise<boolean> {
   const settings = await getVaultSettings(root)
   if (settings.primaryNotesLocation !== 'inbox') return false
-  return (await inferPrimaryNotesLocation(root)) === 'root'
+  return (await inferPrimaryNotesLocation(root, settings.systemFolderPaths)) === 'root'
 }
 
 async function vaultLooksEmpty(root: string): Promise<boolean> {
@@ -1259,14 +1306,119 @@ async function vaultLooksEmpty(root: string): Promise<boolean> {
   return true
 }
 
+/** True when vault.json answers the primary-notes question itself, so nothing
+ *  has to be inferred from the vault's layout. */
+function statesPrimaryNotesLocation(parsed: unknown): boolean {
+  if (!parsed || typeof parsed !== 'object') return false
+  return (parsed as { primaryNotesLocation?: unknown }).primaryNotesLocation != null
+}
+
+/** The remap stated by a parsed (or caller-supplied) settings object, for the
+ *  inference (a remapped system dir is not loose root content). */
+function statedSystemFolderPaths(parsed: unknown): SystemFolderPaths {
+  if (!parsed || typeof parsed !== 'object') return {}
+  return normalizeSystemFolderPaths((parsed as { systemFolderPaths?: unknown }).systemFolderPaths)
+}
+
+/**
+ * `inferPrimaryNotesLocation` memoized per root.
+ *
+ * The inference is a whole-root `readdir`, and `folderOf()` awaits
+ * `getVaultSettings` on every note read and write, so an un-memoized inference
+ * turned a save burst into one directory listing per file. The answer only
+ * changes when the root's own entries do, which is what
+ * `vaultChangeAffectsSettings` watches for.
+ */
+async function inferredPrimaryNotesLocation(
+  root: string,
+  systemFolderPaths?: SystemFolderPaths | null
+): Promise<PrimaryNotesLocation> {
+  const cached = inferredPrimaryCache.get(root)
+  if (cached) return cached
+  const inferred = await inferPrimaryNotesLocation(root, systemFolderPaths)
+  inferredPrimaryCache.set(root, inferred)
+  return inferred
+}
+
 export async function getVaultSettings(root: string): Promise<VaultSettings> {
-  let fallbackPrimary = DEFAULT_VAULT_SETTINGS.primaryNotesLocation
+  const settingsFile = vaultSettingsPath(root)
+  // One handle serves both the mtime check and the read, so the mtime that
+  // keys the cache always describes the bytes that were parsed. A stat of the
+  // path followed by a read of the path leaves a window where the file is
+  // swapped in between, caching version A's mtime with version B's content
+  // (js/file-system-race; same treatment as readWorkflowImportFile).
+  let handle
   try {
-    fallbackPrimary = await inferPrimaryNotesLocation(root)
-    const raw = await fs.readFile(vaultSettingsPath(root), 'utf8')
-    return normalizeVaultSettings(JSON.parse(raw), fallbackPrimary)
+    handle = await fs.open(settingsFile, 'r')
   } catch {
-    return normalizeVaultSettings(null, fallbackPrimary)
+    const cached = vaultSettingsCache.get(root)
+    if (cached) {
+      vaultSettingsCache.delete(root)
+    }
+    return normalizeVaultSettings(null, await inferredPrimaryNotesLocation(root))
+  }
+  try {
+    const stat = await handle.stat()
+    const cached = vaultSettingsCache.get(root)
+    if (cached && sameMtimeMs(cached.mtimeMs, stat.mtimeMs)) {
+      return cached.settings
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await handle.readFile({ encoding: 'utf8' }))
+    } catch {
+      return normalizeVaultSettings(null, await inferredPrimaryNotesLocation(root))
+    }
+    // The layout is only consulted for a question vault.json left unanswered.
+    // A file that states its primaryNotesLocation therefore costs no readdir at
+    // all, and the remap it also states keeps the inference honest when it is
+    // needed (a remapped inbox is a system dir, not loose root content).
+    const fallbackPrimary = statesPrimaryNotesLocation(parsed)
+      ? DEFAULT_VAULT_SETTINGS.primaryNotesLocation
+      : await inferredPrimaryNotesLocation(root, statedSystemFolderPaths(parsed))
+    const settings = normalizeVaultSettings(parsed, fallbackPrimary)
+    warnAboutDiscardedFolderPaths(parsed, settings)
+    vaultSettingsCache.set(root, { settings, mtimeMs: stat.mtimeMs })
+    return settings
+  } finally {
+    await handle.close().catch(() => {})
+  }
+}
+
+
+/**
+ * Say something when a hand-written `systemFolderPaths` entry is thrown away.
+ *
+ * Normalization drops what it cannot use, which is the right way to read a file
+ * a person may have edited with any text editor, and it used to be completely
+ * silent: someone who wrote `"quick": "docs/zennotes/quick"` got the default
+ * `quick/` back with no hint that their line had been refused, and reasonably
+ * concluded the setting did not work (#533). The Settings screen explains a
+ * rejected value as it is typed; this is the same courtesy for the file.
+ *
+ * Runs only where vault.json is actually parsed, which the mtime cache above
+ * makes once per change rather than once per read.
+ */
+function warnAboutDiscardedFolderPaths(parsed: unknown, settings: VaultSettings): void {
+  // The RAW object, deliberately: `statedSystemFolderPaths` normalizes, which
+  // is exactly the step that throws the bad value away, so asking it what the
+  // file said reports only what survived.
+  if (!parsed || typeof parsed !== 'object') return
+  const stated = (parsed as { systemFolderPaths?: unknown }).systemFolderPaths
+  if (!stated || typeof stated !== 'object') return
+  for (const [folder, value] of Object.entries(stated as Record<string, unknown>)) {
+    if (!(folder in DEFAULT_FOLDER_PATHS)) continue
+    if (typeof value !== 'string' || value.trim() === '') continue
+    const kept = settings.systemFolderPaths?.[folder as NoteFolder]
+    if (kept === value.trim()) continue
+    // Its own default is not a rejection, just a redundant line.
+    if (value.trim() === DEFAULT_FOLDER_PATHS[folder as NoteFolder]) continue
+    const reason =
+      describeSystemFolderPathIssue(folder as NoteFolder, value, settings.systemFolderPaths) ??
+      'it could not be used'
+    console.warn(
+      `[zen] vault.json: systemFolderPaths.${folder} = ${JSON.stringify(value)} was ignored. ${reason}`
+    )
   }
 }
 
@@ -1274,39 +1426,119 @@ export async function setVaultSettings(
   root: string,
   next: VaultSettings
 ): Promise<VaultSettings> {
-  const fallbackPrimary = await inferPrimaryNotesLocation(root)
+  const fallbackPrimary = statesPrimaryNotesLocation(next)
+    ? DEFAULT_VAULT_SETTINGS.primaryNotesLocation
+    : await inferredPrimaryNotesLocation(root, statedSystemFolderPaths(next))
   const normalized = normalizeVaultSettings(next, fallbackPrimary)
+  // A note's tags now depend on the preamble folder (#562), so cached metas
+  // describe the OLD setting the moment it moves: renaming the folder has to
+  // drop them or the vault keeps serving tags it no longer believes in, and
+  // pointing the setting away from `typst` would never give those notes their
+  // tags back. Read before the write, while the cache still holds the old value.
+  const previousPreambleFolder = await typstPreambleFolderFor(root)
   // Temporary folder session (#): never write .zennotes/vault.json into a
   // folder the user only dropped in to read. Keep the change in memory.
   if (isEphemeralRoot(root)) return cloneVaultSettings(normalized)
   await fs.mkdir(path.dirname(vaultSettingsPath(root)), { recursive: true })
   await fs.writeFile(vaultSettingsPath(root), JSON.stringify(normalized, null, 2), 'utf8')
+  const writeStat = await fs.stat(vaultSettingsPath(root))
+  vaultSettingsCache.set(root, { settings: normalized, mtimeMs: writeStat.mtimeMs })
+  if (resolveTypstPreambleFolder(normalized.typstPreambles?.folder) !== previousPreambleFolder) {
+    invalidateNoteMetaCache(root)
+  }
   if (normalized.primaryNotesLocation === 'inbox') {
-    await fs.mkdir(path.join(root, 'inbox'), { recursive: true })
+    // The RESOLVED inbox, not the literal one: creating `<root>/inbox` while
+    // the settings point the inbox at `01 - Entry/` left a stray directory
+    // that every classifier then read as the system inbox, and the remap did
+    // nothing at all.
+    await fs.mkdir(
+      path.join(root, resolveFolderPath('inbox', normalized.systemFolderPaths)),
+      { recursive: true }
+    )
+    // A new root-level directory is exactly what the inference reads.
+    inferredPrimaryCache.delete(root)
   }
   return cloneVaultSettings(normalized)
 }
 
-async function primaryNotesRoot(root: string): Promise<string> {
-  const settings = await getVaultSettings(root)
-  return settings.primaryNotesLocation === 'root' ? root : path.join(root, 'inbox')
+export function invalidateVaultSettingsCache(root: string): void {
+  vaultSettingsCache.delete(root)
+  inferredPrimaryCache.delete(root)
 }
 
-function shouldHidePrimaryRootEntry(name: string): boolean {
-  return HIDDEN_PRIMARY_ROOT_NAMES.has(name)
+/** The vault's Typst preamble folder (#562), resolved without touching disk
+ *  while the settings cache is warm. `readMeta` runs once per note, so reading
+ *  vault.json there would add an open()+stat() per file to every scan; the
+ *  cache is invalidated on write and by the watcher, so the fast path can only
+ *  serve a value someone has already validated. */
+async function typstPreambleFolderFor(root: string): Promise<string> {
+  const cached = vaultSettingsCache.get(root)
+  const settings = cached ? cached.settings : await getVaultSettings(root)
+  return resolveTypstPreambleFolder(settings.typstPreambles?.folder)
+}
+
+/**
+ * Whether a watcher event can change what `getVaultSettings` answers.
+ *
+ * Two things can: `.zennotes/vault.json` itself, and, only for a vault whose
+ * vault.json leaves `primaryNotesLocation` unstated, the root's own entries,
+ * which `inferPrimaryNotesLocation` reads. Everything else (a note saved three
+ * folders deep, a comment, a database row) cannot, and dropping the cache for
+ * those turned every write burst into a re-read plus a whole-root readdir on
+ * the path `folderOf()` awaits for each file.
+ */
+export function vaultChangeAffectsSettings(ev: VaultChangeEvent): boolean {
+  if (ev.scope === 'vault-settings') return true
+  if (ev.scope === 'comments' || ev.scope === 'database') return false
+  // A root-level entry (`Notes.md`, or a directory named `Notes`) is what the
+  // inference looks at; anything nested carries a separator.
+  return !ev.path.includes('/')
+}
+
+/** Where a note with no folder of its own belongs: the same directory
+ *  `folderRoot(root, 'inbox')` resolves to, remap included. */
+async function primaryNotesRoot(root: string): Promise<string> {
+  return await folderRoot(root, 'inbox')
+}
+
+/**
+ * Directory names skipped while walking the vault root in `root` primary mode,
+ * where the root itself is the inbox: the asset dirs, our internal dir, and
+ * the RESOLVED directory of every other system folder. A default name whose
+ * folder has been remapped away (`quick/` once quick lives in `Fast/`) is an
+ * ordinary user folder and must not be hidden.
+ */
+function hiddenPrimaryRootNames(settings: VaultSettings): Set<string> {
+  const names = new Set<string>([...ATTACHMENTS_DIRS, INTERNAL_VAULT_DIR])
+  for (const f of ['quick', 'archive', 'trash'] as NoteFolder[]) {
+    names.add(resolveFolderPath(f, settings.systemFolderPaths))
+  }
+  return names
 }
 
 export async function folderRoot(root: string, folder: NoteFolder): Promise<string> {
-  if (folder === 'inbox') return await primaryNotesRoot(root)
-  return path.join(root, folder)
+  if (folder === 'inbox') {
+    const settings = await getVaultSettings(root)
+    if (settings.primaryNotesLocation === 'root') return root
+    return path.join(root, resolveFolderPath('inbox', settings.systemFolderPaths))
+  }
+  const settings = await getVaultSettings(root)
+  return path.join(root, resolveFolderPath(folder, settings.systemFolderPaths))
 }
 
-export function folderForRelativePath(rel: string): NoteFolder | null {
+export function folderForRelativePath(
+  rel: string,
+  settings?: VaultSettings | null
+): NoteFolder | null {
   const normalized = normalizeVaultRelativePath(rel)
   const top = normalized.split('/')[0]
-  if (SYSTEM_FOLDERS.has(top as NoteFolder)) return top as NoteFolder
   if (!top || top.startsWith('.')) return null
-  if (RESERVED_ROOT_NAMES.has(top)) return null
+  const system = systemFolderForDirName(top, settings?.systemFolderPaths)
+  if (system) return system
+  // Only the dirs that are reserved no matter where the system folders live.
+  // A default name whose folder has moved (`inbox/` once inbox is `01 - Entry`)
+  // is an ordinary user folder and must classify as one.
+  if (RESERVED_NON_SYSTEM_ROOT_NAMES.has(top)) return null
   return 'inbox'
 }
 
@@ -1320,7 +1552,8 @@ export async function ensureVaultLayout(root: string): Promise<void> {
   const settings = await getVaultSettings(root)
   for (const f of FOLDERS) {
     if (f === 'inbox' && settings.primaryNotesLocation === 'root') continue
-    await fs.mkdir(path.join(root, f), { recursive: true })
+    const dirPath = resolveFolderPath(f, settings.systemFolderPaths)
+    await fs.mkdir(path.join(root, dirPath), { recursive: true })
   }
   if (wasEmpty) {
     const welcomeDir = await primaryNotesRoot(root)
@@ -1573,8 +1806,9 @@ function markdownDestination(p: string): string {
   return `<${p.replace(/>/g, '%3E')}>`
 }
 
-function folderOf(root: string, absPath: string): NoteFolder | null {
-  return folderForRelativePath(path.relative(root, absPath))
+async function folderOf(root: string, absPath: string): Promise<NoteFolder | null> {
+  const settings = await getVaultSettings(root)
+  return folderForRelativePath(path.relative(root, absPath), settings)
 }
 
 /**
@@ -1632,13 +1866,20 @@ function localAssetTargetKind(target: string): ImportedAssetKind | null {
   return 'file'
 }
 
-/** Pull unique `#tags` out of markdown text, ignoring fenced/inline code. */
+/** Pull unique tags out of a note: its frontmatter `tags` field plus every
+ *  inline `#tag`, ignoring fenced/inline code. The frontmatter block itself is
+ *  excluded from the inline scan, so a `#` in another field is not a tag.
+ *  `frontmatterTags` is shared with the renderer's live extraction (#444). */
 function extractTags(body: string): string[] {
-  if (!body.includes('#')) return []
-  const stripped = stripCodeContent(body)
-  const matches = stripped.match(/(?:^|\s)#(\p{L}[\p{L}\d_/-]*)/gu) || []
   const seen = new Set<string>()
-  for (const m of matches) seen.add(m.trim().slice(1))
+  for (const tag of frontmatterTags(body)) seen.add(tag)
+
+  const markdownBody = body.replace(FRONTMATTER_BLOCK_RE, '')
+  if (markdownBody.includes('#')) {
+    const stripped = stripCodeContent(markdownBody)
+    const matches = stripped.match(/(?:^|\s)#(\p{L}[\p{L}\d_/-]*)/gu) || []
+    for (const m of matches) seen.add(m.trim().slice(1))
+  }
   return [...seen]
 }
 
@@ -1883,9 +2124,11 @@ async function hydratePersistedNoteMetaCache(root: string): Promise<void> {
     const raw = await fs.readFile(noteMetaCachePath(root), 'utf8')
     const parsed = JSON.parse(raw) as {
       version?: unknown
+      preambleFolder?: unknown
       entries?: unknown
     }
     if (parsed.version !== NOTE_META_CACHE_VERSION || !Array.isArray(parsed.entries)) return
+    if (parsed.preambleFolder !== (await typstPreambleFolderFor(root))) return
 
     for (const entry of parsed.entries) {
       if (!entry || typeof entry !== 'object') continue
@@ -1955,7 +2198,16 @@ async function persistNoteMetaCacheSnapshot(
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(
       temp,
-      `${JSON.stringify({ version: NOTE_META_CACHE_VERSION, entries })}\n`,
+      `${JSON.stringify({
+        version: NOTE_META_CACHE_VERSION,
+        // A note's tags depend on which folder holds Typst preambles (#562),
+        // so the file records the folder it was built under. Clearing the
+        // in-memory cache is not enough on its own: whole-root invalidation
+        // re-arms hydration, and without this stamp the next scan would load
+        // these very tags straight back off disk.
+        preambleFolder: await typstPreambleFolderFor(root),
+        entries
+      })}\n`,
       'utf8'
     )
     await fs.rename(temp, target)
@@ -2122,8 +2374,8 @@ function resolveSearchBackend(
   return 'builtin'
 }
 
-function noteFolderFromRelPath(relPath: string): NoteFolder | null {
-  return folderForRelativePath(relPath)
+function noteFolderFromRelPath(relPath: string, settings?: VaultSettings | null): NoteFolder | null {
+  return folderForRelativePath(relPath, settings)
 }
 
 // A directory entry counts as a markdown note when it's a real .md file
@@ -2196,6 +2448,8 @@ async function resolveDirDescent(
 
 async function collectBuiltinSearchCandidates(root: string): Promise<VaultTextSearchCandidate[]> {
   const files: Array<{ full: string; folder: NoteFolder }> = []
+  const settings = await getVaultSettings(root)
+  const hiddenRootNames = hiddenPrimaryRootNames(settings)
   const walkFolder = async (
     folder: NoteFolder,
     dirAbs: string,
@@ -2216,7 +2470,7 @@ async function collectBuiltinSearchCandidates(root: string): Promise<VaultTextSe
       const childReal = await resolveDirDescent(full, entry, dirReal, ancestors)
       if (childReal !== null) {
         if (entry.name.startsWith('.')) continue
-        if (isPrimaryRoot && dirAbs === topAbs && shouldHidePrimaryRootEntry(entry.name)) continue
+        if (isPrimaryRoot && dirAbs === topAbs && hiddenRootNames.has(entry.name)) continue
         ancestors.add(childReal)
         await walkFolder(folder, full, childReal, topAbs, isPrimaryRoot, ancestors)
         ancestors.delete(childReal)
@@ -2273,6 +2527,7 @@ async function collectRipgrepSearchCandidates(
   root: string,
   paths: Required<VaultTextSearchToolPaths>
 ): Promise<VaultTextSearchCandidate[]> {
+  const settings = await getVaultSettings(root)
   let stdout = ''
   try {
     const ripgrep = await searchExecutable('ripgrep', paths)
@@ -2334,7 +2589,7 @@ async function collectRipgrepSearchCandidates(
         ? (rawLines as { text: string }).text.replace(/\r?\n$/, '')
         : null
     if (!relPath || rawLineText == null || typeof lineNumber !== 'number') continue
-    const folder = noteFolderFromRelPath(relPath)
+    const folder = noteFolderFromRelPath(relPath, settings)
     if (!folder || !SEARCHABLE_TEXT_FOLDERS.includes(folder)) continue
     candidates.push({
       path: relPath,
@@ -2552,6 +2807,13 @@ async function readMeta(
   } catch {
     /* ignore — treat as empty */
   }
+  // A Typst preamble is Typst source, not prose: `#let vec(x) = bold(x)` and
+  // the `#var` references in its formulas are variables, and indexing them
+  // filled the vault's tag list with `let` and every variable name (#562).
+  // Same reasoning as the Excalidraw skip above, but tags ONLY: a preamble
+  // keeps its excerpt, wikilinks and searchability, which is the whole reason
+  // #486 made preambles ordinary notes rather than hidden files.
+  const isPreamble = isTypstPreamblePath(relPath, await typstPreambleFolderFor(root))
   const meta: NoteMeta = {
     path: relPath,
     title: path.basename(abs, path.extname(abs)),
@@ -2560,7 +2822,7 @@ async function readMeta(
     createdAt: stat.birthtimeMs || stat.ctimeMs,
     updatedAt: stat.mtimeMs,
     size: stat.size,
-    tags: extractTags(body),
+    tags: isPreamble ? [] : extractTags(body),
     wikilinks: extractWikilinks(body),
     assetEmbeds: extractAssetEmbeds(body),
     hasAttachments: bodyHasLocalAsset(body),
@@ -2618,6 +2880,8 @@ async function mapLimit<T, U>(
  */
 export async function listFolders(root: string): Promise<FolderEntry[]> {
   const out: FolderEntry[] = []
+  const settings = await getVaultSettings(root)
+  const hiddenRootNames = hiddenPrimaryRootNames(settings)
   for (const folder of FOLDERS) {
     const topAbs = await folderRoot(root, folder)
     const isPrimaryRoot = folder === 'inbox' && path.resolve(topAbs) === path.resolve(root)
@@ -2635,7 +2899,7 @@ export async function listFolders(root: string): Promise<FolderEntry[]> {
         const childReal = await resolveDirDescent(full, e, dirReal, ancestors)
         if (childReal === null) continue
         if (e.name.startsWith('.')) continue
-        if (isPrimaryRoot && dirAbs === topAbs && shouldHidePrimaryRootEntry(e.name)) continue
+        if (isPrimaryRoot && dirAbs === topAbs && hiddenRootNames.has(e.name)) continue
         const nextSub = subpath ? `${subpath}/${e.name}` : e.name
         out.push({ folder, subpath: nextSub, siblingOrder: index, isSymlink: e.isSymbolicLink() })
         // A `<Name>.base` database folder is listed (the renderer shows it as a
@@ -2655,6 +2919,8 @@ export async function listFolders(root: string): Promise<FolderEntry[]> {
 export async function listNotes(root: string): Promise<NoteMeta[]> {
   const startedAt = performance.now()
   await hydratePersistedNoteMetaCache(root)
+  const settings = await getVaultSettings(root)
+  const hiddenRootNames = hiddenPrimaryRootNames(settings)
   const noteFiles: Array<{
     full: string
     folder: NoteFolder
@@ -2680,7 +2946,7 @@ export async function listNotes(root: string): Promise<NoteMeta[]> {
       const childReal = await resolveDirDescent(full, entry, dirReal, ancestors)
       if (childReal !== null) {
         if (entry.name.startsWith('.')) continue
-        if (isPrimaryRoot && dirAbs === topAbs && shouldHidePrimaryRootEntry(entry.name)) continue
+        if (isPrimaryRoot && dirAbs === topAbs && hiddenRootNames.has(entry.name)) continue
         ancestors.add(childReal)
         await walkFolder(folder, full, childReal, topAbs, isPrimaryRoot, ancestors)
         ancestors.delete(childReal)
@@ -2774,7 +3040,7 @@ function resolveSafe(root: string, rel: string): string {
 
 export async function readNote(root: string, rel: string): Promise<NoteContent> {
   const abs = resolveSafe(root, rel)
-  const folder = folderOf(root, abs)
+  const folder = await folderOf(root, abs)
   if (!folder) throw new Error(`Note not in a known folder: ${rel}`)
   const body = await fs.readFile(abs, 'utf8')
   const meta = await readMeta(root, abs, folder)
@@ -2787,7 +3053,7 @@ export async function writeNote(root: string, rel: string, body: string): Promis
   await fs.writeFile(abs, body, 'utf8')
   invalidateNoteMetaCache(root, rel)
   invalidateVaultTextSearchCache(root)
-  const folder = folderOf(root, abs)
+  const folder = await folderOf(root, abs)
   if (!folder) throw new Error(`Note not in a known folder: ${rel}`)
   return await readMeta(root, abs, folder)
 }
@@ -2927,7 +3193,7 @@ export async function appendToNote(
   position: 'start' | 'end'
 ): Promise<NoteMeta> {
   const abs = resolveSafe(root, rel)
-  const folder = folderOf(root, abs)
+  const folder = await folderOf(root, abs)
   if (!folder) throw new Error(`Note not in a known folder: ${rel}`)
   const existing = await fs.readFile(abs, 'utf8')
   const trimmedAddition = body.replace(/\s+$/u, '')
@@ -3061,47 +3327,10 @@ function markdownForImportedAsset(
   return `[${filename}](${destination})`
 }
 
-function padPastedImageDatePart(value: number): string {
-  return String(value).padStart(2, '0')
-}
-
-function pastedImageTimestamp(now: Date): string {
-  const date = [
-    now.getFullYear(),
-    padPastedImageDatePart(now.getMonth() + 1),
-    padPastedImageDatePart(now.getDate())
-  ].join('-')
-  const time = [
-    padPastedImageDatePart(now.getHours()),
-    padPastedImageDatePart(now.getMinutes()),
-    padPastedImageDatePart(now.getSeconds())
-  ].join('')
-  return `${date} ${time}`
-}
-
-function pastedImageExtension(input: Pick<PastedImageInput, 'mimeType' | 'suggestedName'>): string {
-  const suggestedExt = path.extname(input.suggestedName ?? '').toLowerCase()
-  if (IMAGE_EXTENSIONS.has(suggestedExt)) return suggestedExt
-
-  const mimeExt = PASTED_IMAGE_MIME_EXTENSIONS[input.mimeType.toLowerCase()]
-  if (mimeExt) return mimeExt
-  if (input.mimeType.toLowerCase().startsWith('image/')) return '.png'
-  throw new Error('Clipboard item is not an image.')
-}
-
-function pastedImageFilename(input: Pick<PastedImageInput, 'mimeType' | 'suggestedName'>, now: Date): string {
-  const ext = pastedImageExtension(input)
-  const rawName = path.basename(input.suggestedName ?? '')
-  const nameExt = path.extname(rawName)
-  const rawBase = nameExt ? path.basename(rawName, nameExt) : rawName
-  const base = rawBase
-    .replace(/[\\/:%*?"<>|\[\]#^]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-  const fallbackBase = `Pasted Image ${pastedImageTimestamp(now)}`
-  const finalBase = base && base !== '.' && base !== '..' ? base : fallbackBase
-  return `${finalBase}${ext}`
-}
+// The naming lives in @shared/pasted-image so the web client produces the
+// same filenames; re-exported for the remote-workspace paste path, which
+// uploads the bytes but must name the file exactly like a local paste would.
+export { pastedImageFilename }
 
 function pastedImageBuffer(data: PastedImageInput['data']): Buffer {
   if (data instanceof ArrayBuffer) return Buffer.from(data)
@@ -3183,7 +3412,7 @@ export async function createExcalidraw(
  */
 export async function convertObsidianExcalidraw(root: string, rel: string): Promise<NoteMeta> {
   const abs = resolveSafe(root, rel)
-  const folder = folderOf(root, abs)
+  const folder = await folderOf(root, abs)
   if (!folder) throw new Error(`Drawing is not in a known folder: ${rel}`)
   const markdown = await fs.readFile(abs, 'utf8')
   if (!isObsidianExcalidrawPath(rel) && !isObsidianExcalidrawMarkdown(markdown)) {
@@ -3233,7 +3462,7 @@ export async function importExternalNote(root: string, sourceAbsPath: string): P
   const rel = toPosix(path.relative(root, destAbs))
   invalidateNoteMetaCache(root, rel)
   invalidateVaultTextSearchCache(root)
-  return await readMeta(root, destAbs, folderForRelativePath(rel) ?? 'inbox')
+  return await readMeta(root, destAbs, folderForRelativePath(rel, await getVaultSettings(root)) ?? 'inbox')
 }
 
 export async function renameNote(
@@ -3242,7 +3471,7 @@ export async function renameNote(
   nextTitle: string
 ): Promise<NoteMeta> {
   const abs = resolveSafe(root, rel)
-  const folder = folderOf(root, abs)
+  const folder = await folderOf(root, abs)
   if (!folder) throw new Error(`Note not in a known folder: ${rel}`)
   const dir = path.dirname(abs)
   const trimmed = sanitizeNoteTitle(nextTitle)
@@ -3325,7 +3554,7 @@ async function updateInboundWikilinks(
  * the reverse move puts the note back in the subfolder it came from.
  */
 async function folderSubpathOf(root: string, abs: string): Promise<string> {
-  const folder = folderOf(root, abs)
+  const folder = await folderOf(root, abs)
   if (!folder) return ''
   const sourceRoot = await folderRoot(root, folder)
   const relDir = path.relative(sourceRoot, path.dirname(abs))
@@ -3378,10 +3607,12 @@ export function unarchiveNote(root: string, rel: string): Promise<NoteMeta> {
 }
 
 export async function emptyTrash(root: string): Promise<void> {
-  const trashDir = path.join(root, 'trash')
+  const trashDir = await folderRoot(root, 'trash')
+  const settings = await getVaultSettings(root)
+  const trashRelPrefix = resolveFolderPath('trash', settings.systemFolderPaths)
   try {
     const entries = await fs.readdir(trashDir)
-    await Promise.all(entries.map((e) => removeNoteComments(root, `trash/${e}`)))
+    await Promise.all(entries.map((e) => removeNoteComments(root, `${trashRelPrefix}/${e}`)))
     await Promise.all(
       entries.map((e) => fs.rm(path.join(trashDir, e), { recursive: true, force: true }))
     )
@@ -3461,14 +3692,23 @@ export async function deleteAsset(root: string, rel: string): Promise<DeletedAss
   await fs.mkdir(trashDir, { recursive: true })
   const name = path.basename(source.abs)
   const deletedAt = new Date().toISOString()
-  await fs.rename(source.abs, path.join(trashDir, name))
   // Persist the original location so the asset can be listed + restored from the
   // Trash view even after a restart (not just via the in-session undo stack).
-  await fs.writeFile(
-    path.join(trashDir, DELETED_ASSET_META),
-    JSON.stringify({ path: source.rel, name, deletedAt }, null, 2),
-    'utf8'
-  )
+  // Metadata first, file move last: a failure anywhere leaves the asset still
+  // in the vault. The old order (rename, then metadata) could hit a write
+  // error after the move and strand the asset in a token dir the Trash view
+  // skips, gone from the vault with no in-app way back.
+  try {
+    await fs.writeFile(
+      path.join(trashDir, DELETED_ASSET_META),
+      JSON.stringify({ path: source.rel, name, deletedAt }, null, 2),
+      'utf8'
+    )
+    await fs.rename(source.abs, path.join(trashDir, name))
+  } catch (err) {
+    await fs.rm(trashDir, { recursive: true, force: true }).catch(() => {})
+    throw err
+  }
   return { path: source.rel, name, undoToken, deletedAt }
 }
 
@@ -3518,10 +3758,27 @@ export async function emptyDeletedAssets(root: string): Promise<void> {
 }
 
 export async function restoreDeletedAsset(root: string, deleted: DeletedAsset): Promise<AssetMeta> {
-  const targetRel = cleanDeletedAssetPath(deleted.path)
-  const name = cleanAssetFilename(deleted.name)
   const undoToken = cleanDeletedAssetToken(deleted.undoToken)
   const trashDir = resolveSafe(root, `${INTERNAL_VAULT_DIR}/${DELETED_ASSETS_DIR}/${undoToken}`)
+  // Only the token comes from the caller; the stored metadata decides what
+  // gets restored and where. Trusting a caller-supplied name here once let a
+  // request naming the metadata file itself "restore" that file and then
+  // destroy the real asset bytes with the trash dir cleanup (the Go server
+  // shared the hole; the two stores are one disk contract).
+  let storedMeta: { path: string; name: string }
+  try {
+    const raw = await fs.readFile(path.join(trashDir, DELETED_ASSET_META), 'utf8')
+    const parsed = JSON.parse(raw) as { path?: unknown; name?: unknown }
+    if (typeof parsed.path !== 'string' || typeof parsed.name !== 'string') throw new Error()
+    storedMeta = { path: parsed.path, name: parsed.name }
+  } catch {
+    throw new Error('This deleted asset can no longer be restored.')
+  }
+  const targetRel = cleanDeletedAssetPath(storedMeta.path)
+  const name = cleanAssetFilename(storedMeta.name)
+  if (name === DELETED_ASSET_META) {
+    throw new Error('This deleted asset can no longer be restored.')
+  }
   const sourceAbs = path.join(trashDir, name)
   const targetAbs = resolveSafe(root, targetRel)
   const targetDir = path.dirname(targetAbs)
@@ -3852,7 +4109,7 @@ export async function moveNote(
 
   // No-op if the source already lives at the destination.
   if (path.dirname(oldAbs) === destDir) {
-    const folder = folderOf(root, oldAbs)
+    const folder = await folderOf(root, oldAbs)
     if (!folder) throw new Error(`Note not in a known folder: ${oldRel}`)
     return await readMeta(root, oldAbs, folder)
   }
@@ -3873,7 +4130,7 @@ export async function moveNote(
 
 export async function duplicateNote(root: string, rel: string): Promise<NoteMeta> {
   const abs = resolveSafe(root, rel)
-  const folder = folderOf(root, abs)
+  const folder = await folderOf(root, abs)
   if (!folder) throw new Error(`Note not in a known folder: ${rel}`)
   const dir = path.dirname(abs)
   const ext = path.extname(abs)

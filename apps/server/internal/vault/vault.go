@@ -88,14 +88,18 @@ var reservedRootNames = map[string]struct{}{
 	internalVaultDir:      {},
 }
 
-var hiddenPrimaryRootNames = map[string]struct{}{
-	string(FolderQuick):   {},
-	string(FolderArchive): {},
-	string(FolderTrash):   {},
+// reservedNonSystemRootNames is the subset of reservedRootNames that stays
+// reserved however the system folders are remapped: asset dirs and our own
+// internal dir are never user note folders, while `inbox`/`archive`/… are
+// reserved only while a system folder actually resolves there (see
+// SystemFolderForDirName). Mirrors RESERVED_NON_SYSTEM_ROOT_NAMES in
+// apps/desktop/src/main/vault.ts.
+var reservedNonSystemRootNames = map[string]struct{}{
 	AssetsDir:             {},
 	PrimaryAttachmentsDir: {},
 	internalVaultDir:      {},
 }
+
 var validFolderIconIDs = map[FolderIconID]struct{}{
 	"folder":     {},
 	"bolt":       {},
@@ -146,13 +150,30 @@ var validFolderColorIDs = map[FolderColorID]struct{}{
 func init() {
 	for _, dir := range legacyAttachmentsDirs {
 		reservedRootNames[dir] = struct{}{}
-		hiddenPrimaryRootNames[dir] = struct{}{}
+		reservedNonSystemRootNames[dir] = struct{}{}
 	}
 }
 
-func shouldHidePrimaryRootName(name string) bool {
-	_, hidden := hiddenPrimaryRootNames[name]
-	return hidden
+func shouldHidePrimaryRootName(name string, hidden map[string]struct{}) bool {
+	_, skip := hidden[name]
+	return skip
+}
+
+// hiddenPrimaryRootNames returns the directory names skipped while walking the
+// vault root in `root` primary mode, where the root itself is the inbox: the
+// asset dirs, our internal dir, and the RESOLVED directory of every other
+// system folder. A default name whose folder has been remapped away (`quick/`
+// once quick lives in `Fast/`) is an ordinary user folder and must not be
+// hidden. Mirrors hiddenPrimaryRootNames in apps/desktop/src/main/vault.ts.
+func hiddenPrimaryRootNames(settings VaultSettings) map[string]struct{} {
+	names := map[string]struct{}{}
+	for name := range reservedNonSystemRootNames {
+		names[name] = struct{}{}
+	}
+	for _, folder := range []NoteFolder{FolderQuick, FolderArchive, FolderTrash} {
+		names[resolveFolderPath(folder, settings.SystemFolderPaths)] = struct{}{}
+	}
+	return names
 }
 
 // Vault encapsulates all operations against a filesystem vault root.
@@ -170,6 +191,19 @@ type Vault struct {
 	metaCache     map[string]noteMetaCacheEntry
 	metaCacheLoad bool
 	metaCacheGen  uint64
+	// settingsMu guards settingsCache only. GetSettings never takes v.mu (and
+	// is called with v.mu already held), so the lock order is always v.mu
+	// first, settingsMu second, and never the reverse.
+	settingsMu    sync.Mutex
+	settingsCache *cachedVaultSettings
+}
+
+// cachedVaultSettings is a parsed vault.json plus the identity of the bytes it
+// was parsed from.
+type cachedVaultSettings struct {
+	settings VaultSettings
+	modTime  time.Time
+	size     int64
 }
 
 // Options tunes vault filesystem permissions and limits. Zero values
@@ -291,6 +325,23 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 	}
 	favorites := make([]string, len(settings.Favorites))
 	copy(favorites, settings.Favorites)
+	// Nil stays nil: an absent map marshals away thanks to `omitempty`, and an
+	// empty one would claim the vault has overrides it does not have.
+	var systemFolderPaths map[string]string
+	if settings.SystemFolderPaths != nil {
+		systemFolderPaths = make(map[string]string, len(settings.SystemFolderPaths))
+		for key, value := range settings.SystemFolderPaths {
+			systemFolderPaths[key] = value
+		}
+	}
+	// Nil stays nil here too (#458); the walker treats an absent Tasks object
+	// as "nothing excluded".
+	var tasks *TasksSettings
+	if settings.Tasks != nil {
+		excluded := make([]string, len(settings.Tasks.ExcludedFolders))
+		copy(excluded, settings.Tasks.ExcludedFolders)
+		tasks = &TasksSettings{ExcludedFolders: excluded}
+	}
 	dailyLegacyPatterns := make([]DateNotePatternSettings, len(settings.DailyNotes.LegacyPatterns))
 	copy(dailyLegacyPatterns, settings.DailyNotes.LegacyPatterns)
 	weeklyLegacyPatterns := make([]DateNotePatternSettings, len(settings.WeeklyNotes.LegacyPatterns))
@@ -325,9 +376,14 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 			LegacyPatterns: monthlyLegacyPatterns,
 			TemplateID:     settings.MonthlyNotes.TemplateID,
 		},
-		FolderIcons:  folderIcons,
-		FolderColors: folderColors,
-		Favorites:    favorites,
+		DrawingsLocation:  settings.DrawingsLocation,
+		DatabasesLocation: settings.DatabasesLocation,
+		TasksLocation:     settings.TasksLocation,
+		FolderIcons:       folderIcons,
+		FolderColors:      folderColors,
+		Favorites:         favorites,
+		SystemFolderPaths: systemFolderPaths,
+		Tasks:             tasks,
 	}
 }
 
@@ -521,9 +577,30 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 			LegacyPatterns: normalizeMonthlyNoteLegacyPatterns(value.MonthlyNotes.LegacyPatterns),
 			TemplateID:     value.MonthlyNotes.TemplateID,
 		},
-		FolderIcons:  folderIcons,
-		FolderColors: folderColors,
-		Favorites:    normalizeFavorites(value.Favorites),
+		DrawingsLocation:  normalizeFileLocation(value.DrawingsLocation),
+		DatabasesLocation: normalizeFileLocation(value.DatabasesLocation),
+		TasksLocation:     normalizeFileLocation(value.TasksLocation),
+		FolderIcons:       folderIcons,
+		FolderColors:      folderColors,
+		Favorites:         normalizeFavorites(value.Favorites),
+		SystemFolderPaths: normalizeSystemFolderPaths(value.SystemFolderPaths),
+		Tasks:             normalizeTasksSettings(value.Tasks),
+		TypstPreambles:    normalizeTypstPreambleSettings(value.TypstPreambles),
+	}
+}
+
+// normalizeFileLocation mirrors app-core's normalizeFileLocation: validate the
+// mode (unknown → primary) and, for folder mode, trim whitespace and slashes so
+// the stored value round-trips cleanly (#446).
+func normalizeFileLocation(value FileLocationSetting) FileLocationSetting {
+	switch value.Mode {
+	case FileLocationActiveNote:
+		return FileLocationSetting{Mode: FileLocationActiveNote}
+	case FileLocationFolder:
+		folder := strings.Trim(strings.TrimSpace(value.Folder), "/")
+		return FileLocationSetting{Mode: FileLocationFolder, Folder: folder}
+	default:
+		return FileLocationSetting{Mode: FileLocationPrimary}
 	}
 }
 
@@ -724,25 +801,82 @@ func (v *Vault) vaultLooksEmpty() bool {
 	return true
 }
 
+// GetSettings reads the vault settings, reparsing vault.json only when the file
+// on disk has actually changed. Every folderRoot() call consults the settings,
+// so a single client refresh asked for them about five times and each ask meant
+// a ReadDir of the root plus a read and a JSON parse of vault.json.
+//
+// The cache is keyed on the file's mtime and size, and one open handle serves
+// both the stat and the read so the key always describes the bytes that were
+// parsed. A stat of the path followed by a read of the path would leave a
+// window where the file is swapped in between (js/file-system-race). This
+// mirrors getVaultSettings in apps/desktop/src/main/vault.ts.
 func (v *Vault) GetSettings() (VaultSettings, error) {
-	fallbackPrimary := v.inferPrimaryNotesLocation()
-	raw, err := os.ReadFile(v.settingsPath())
+	file, err := os.Open(v.settingsPath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return normalizeVaultSettings(VaultSettings{}, fallbackPrimary), nil
+			v.invalidateSettingsCache()
+			return normalizeVaultSettings(VaultSettings{}, v.inferPrimaryNotesLocation()), nil
 		}
+		return VaultSettings{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return VaultSettings{}, err
+	}
+	if cached, ok := v.cachedSettings(info); ok {
+		return cached, nil
+	}
+	raw, err := io.ReadAll(file)
+	if err != nil {
 		return VaultSettings{}, err
 	}
 	var settings VaultSettings
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		return VaultSettings{}, err
 	}
-	return normalizeVaultSettings(settings, fallbackPrimary), nil
+	normalized := normalizeVaultSettings(settings, v.inferPrimaryNotesLocation())
+	v.storeSettingsCache(normalized, info)
+	return cloneSettings(normalized), nil
+}
+
+// cachedSettings returns the cached settings when they were parsed from a
+// vault.json with this exact mtime and size. The copy is defensive: callers
+// mutate what GetSettings hands them.
+func (v *Vault) cachedSettings(info os.FileInfo) (VaultSettings, bool) {
+	v.settingsMu.Lock()
+	defer v.settingsMu.Unlock()
+	cached := v.settingsCache
+	if cached == nil || cached.size != info.Size() || !cached.modTime.Equal(info.ModTime()) {
+		return VaultSettings{}, false
+	}
+	return cloneSettings(cached.settings), true
+}
+
+func (v *Vault) storeSettingsCache(settings VaultSettings, info os.FileInfo) {
+	v.settingsMu.Lock()
+	defer v.settingsMu.Unlock()
+	v.settingsCache = &cachedVaultSettings{
+		settings: cloneSettings(settings),
+		modTime:  info.ModTime(),
+		size:     info.Size(),
+	}
+}
+
+func (v *Vault) invalidateSettingsCache() {
+	v.settingsMu.Lock()
+	defer v.settingsMu.Unlock()
+	v.settingsCache = nil
 }
 
 func (v *Vault) SetSettings(next VaultSettings) (VaultSettings, error) {
 	fallbackPrimary := v.inferPrimaryNotesLocation()
 	normalized := normalizeVaultSettings(next, fallbackPrimary)
+	// Read before the write, while the cache still answers with the old value:
+	// a note's tags depend on the preamble folder (#562), so cached metas
+	// describe the previous setting the moment it moves.
+	previousPreambleFolder := v.typstPreambleFolder()
 	if err := os.MkdirAll(filepath.Dir(v.settingsPath()), v.dirMode); err != nil {
 		return VaultSettings{}, err
 	}
@@ -753,12 +887,18 @@ func (v *Vault) SetSettings(next VaultSettings) (VaultSettings, error) {
 	if err := os.WriteFile(v.settingsPath(), data, v.fileMode); err != nil {
 		return VaultSettings{}, err
 	}
+	// The next read re-parses rather than trusting a same-tick mtime.
+	v.invalidateSettingsCache()
 	if normalized.PrimaryNotesLocation == PrimaryNotesInbox {
-		if err := os.MkdirAll(filepath.Join(v.root, string(FolderInbox)), v.dirMode); err != nil {
+		inbox := filepath.Join(v.root, resolveFolderPath(FolderInbox, normalized.SystemFolderPaths))
+		if err := os.MkdirAll(inbox, v.dirMode); err != nil {
 			return VaultSettings{}, err
 		}
 	}
 	v.invalidateTextSearchCache()
+	if resolveTypstPreambleFolder(normalized) != previousPreambleFolder {
+		v.invalidateNoteMetaCache()
+	}
 	return cloneSettings(normalized), nil
 }
 
@@ -770,14 +910,22 @@ func (v *Vault) primaryNotesRoot() (string, error) {
 	if settings.PrimaryNotesLocation == PrimaryNotesRoot {
 		return v.root, nil
 	}
-	return filepath.Join(v.root, string(FolderInbox)), nil
+	// Resolve through the override, the same as EnsureLayout: hardcoding
+	// `inbox` here made every inbox read and write miss a remapped inbox while
+	// the layout pass dutifully created the remapped directory. (#115)
+	return filepath.Join(v.root, resolveFolderPath(FolderInbox, settings.SystemFolderPaths)), nil
 }
 
 func (v *Vault) folderRoot(folder NoteFolder) (string, error) {
 	if folder == FolderInbox {
 		return v.primaryNotesRoot()
 	}
-	return filepath.Join(v.root, string(folder)), nil
+	settings, err := v.GetSettings()
+	if err != nil {
+		return "", err
+	}
+	p := resolveFolderPath(folder, settings.SystemFolderPaths)
+	return filepath.Join(v.root, p), nil
 }
 
 // EnsureLayout creates the four top-level folders and seeds a welcome
@@ -792,7 +940,8 @@ func (v *Vault) EnsureLayout() error {
 		if f == FolderInbox && settings.PrimaryNotesLocation == PrimaryNotesRoot {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Join(v.root, string(f)), v.dirMode); err != nil {
+		p := resolveFolderPath(f, settings.SystemFolderPaths)
+		if err := os.MkdirAll(filepath.Join(v.root, p), v.dirMode); err != nil {
 			return err
 		}
 	}
@@ -958,6 +1107,12 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 	defer v.mu.RUnlock()
 	v.hydratePersistedNoteMetaCache()
 
+	settings, err := v.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	hiddenRootNames := hiddenPrimaryRootNames(settings)
+
 	type noteFile struct {
 		folder NoteFolder
 		path   string
@@ -981,13 +1136,20 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 				if strings.HasPrefix(d.Name(), ".") && path != folderRoot {
 					return filepath.SkipDir
 				}
-				if isFormDirName(d.Name()) {
-					return filepath.SkipDir // database folder — not loose notes
-				}
+				// A `<Name>.base` folder is NOT skipped here. Its record pages are
+				// real notes: the user opens them, writes in them, and links to
+				// them, and the desktop lists them exactly like any other note.
+				// Skipping the folder made every wikilink into a database resolve
+				// to nothing on a remote vault while working locally (#527). Only
+				// `.md` files are collected below, so the database's own data.csv
+				// and schema.json still never surface as notes. ListFolders and
+				// ListAssets DO skip it, deliberately: the internals are not loose
+				// folders or attachments, and the renderer draws the database
+				// itself rather than its directory.
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-						if shouldHidePrimaryRootName(d.Name()) {
+						if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
 							return filepath.SkipDir
 						}
 					}
@@ -997,7 +1159,7 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
 						return filepath.SkipDir
 					}
 				}
@@ -1020,6 +1182,10 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 		limit = len(files)
 	}
 	sem := make(chan struct{}, limit)
+	// Resolved once for the whole scan, not once per note: this loop reads a
+	// meta per file across a pool of goroutines, and resolving inside would
+	// open and stat vault.json (and take settingsMu) for every one of them.
+	preambleFolder := v.typstPreambleFolder()
 	var wg sync.WaitGroup
 	for index, file := range files {
 		wg.Add(1)
@@ -1027,7 +1193,7 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			meta, err := v.readMeta(file.folder, file.path)
+			meta, err := v.readMetaWithPreambleFolder(file.folder, file.path, preambleFolder)
 			if err != nil {
 				return // skip unreadable files silently
 			}
@@ -1065,6 +1231,11 @@ func assignSiblingOrder[T any](list []T, key func(T) string, set func(*T, int)) 
 func (v *Vault) ListFolders() ([]FolderEntry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	settings, err := v.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	hiddenRootNames := hiddenPrimaryRootNames(settings)
 	out := []FolderEntry{}
 	for _, folder := range AllFolders {
 		folderRoot, err := v.folderRoot(folder)
@@ -1091,7 +1262,7 @@ func (v *Vault) ListFolders() ([]FolderEntry, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
 						return filepath.SkipDir
 					}
 				}
@@ -1225,7 +1396,7 @@ func kindForExt(ext string) string {
 // buildNoteMeta assembles NoteMeta for a note-like file. Excalidraw drawings
 // store JSON, not Markdown, so their tags/wikilinks/excerpt are skipped — a hex
 // color like "#1971c2" in the scene must not register as a #tag.
-func buildNoteMeta(relPosix, title string, folder NoteFolder, info os.FileInfo, bodyStr string) NoteMeta {
+func buildNoteMeta(relPosix, title string, folder NoteFolder, info os.FileInfo, bodyStr, preambleFolder string) NoteMeta {
 	meta := NoteMeta{
 		Path:      relPosix,
 		Title:     title,
@@ -1239,14 +1410,30 @@ func buildNoteMeta(relPosix, title string, folder NoteFolder, info os.FileInfo, 
 	if isExcalidrawName(relPosix) {
 		return meta
 	}
-	meta.Tags = ExtractTags(bodyStr)
 	meta.Wikilinks = ExtractWikilinks(bodyStr)
 	meta.HasAttachments = BodyHasLocalAsset(bodyStr)
 	meta.Excerpt = BuildExcerpt(bodyStr)
+	// A Typst preamble holds Typst source, not prose: `#let vec(x) = bold(x)`
+	// and the `#var` references in its formulas are variables, so indexing them
+	// filled the tag list with `let` and every variable name (#562). Tags only:
+	// the note keeps its excerpt, wikilinks and searchability.
+	if isTypstPreamblePath(relPosix, preambleFolder) {
+		return meta
+	}
+	meta.Tags = ExtractTags(bodyStr)
 	return meta
 }
 
 func (v *Vault) readMeta(folder NoteFolder, abs string) (NoteMeta, error) {
+	return v.readMetaWithPreambleFolder(folder, abs, v.typstPreambleFolder())
+}
+
+// readMetaWithPreambleFolder is readMeta with the preamble folder already
+// resolved, for callers reading many notes at once.
+func (v *Vault) readMetaWithPreambleFolder(
+	folder NoteFolder,
+	abs, preambleFolder string,
+) (NoteMeta, error) {
 	info, err := os.Stat(abs)
 	if err != nil {
 		return NoteMeta{}, err
@@ -1278,7 +1465,7 @@ func (v *Vault) readMeta(folder NoteFolder, abs string) (NoteMeta, error) {
 
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
 
-	meta := buildNoteMeta(relPosix, title, folder, info, bodyStr)
+	meta := buildNoteMeta(relPosix, title, folder, info, bodyStr, preambleFolder)
 	v.metaCacheMu.Lock()
 	v.metaCache[abs] = noteMetaCacheEntry{
 		mtimeMs: statMtimeMs,
@@ -1300,6 +1487,11 @@ func (v *Vault) ReadNote(rel string) (NoteContent, error) {
 	if err != nil {
 		return NoteContent{}, err
 	}
+	// The stat above already knows the answer, so say it here instead of
+	// reading and then guessing from the platform's errno.
+	if info.IsDir() {
+		return NoteContent{}, ErrIsDirectory
+	}
 	body, err := os.ReadFile(abs)
 	if err != nil {
 		return NoteContent{}, err
@@ -1308,7 +1500,7 @@ func (v *Vault) ReadNote(rel string) (NoteContent, error) {
 	bodyStr := string(body)
 	rel = filepath.ToSlash(rel)
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
-	meta := buildNoteMeta(rel, title, folder, info, bodyStr)
+	meta := buildNoteMeta(rel, title, folder, info, bodyStr, v.typstPreambleFolder())
 	return NoteContent{NoteMeta: meta, Body: bodyStr}, nil
 }
 
@@ -1546,12 +1738,31 @@ func (v *Vault) copyNoteCommentsLocked(sourceRel, nextRel string) error {
 	return err
 }
 
+// folderOf classifies an absolute path by the folder it lives in, honoring the
+// on-disk overrides: without them a note in a remapped trash directory came
+// back tagged `inbox`, and a restore lost the subfolder it was trashed from.
+// typstPreambleFolder resolves the vault's preamble folder (#562) the same way
+// folderOf resolves the system-folder remap: through GetSettings, whose parse
+// is cached against vault.json's identity. Falls back to the default when the
+// settings cannot be read, so a note is never mistaken for a preamble.
+func (v *Vault) typstPreambleFolder() string {
+	settings, err := v.GetSettings()
+	if err != nil {
+		return DefaultTypstPreambleFolder
+	}
+	return resolveTypstPreambleFolder(settings)
+}
+
 func (v *Vault) folderOf(abs string) (NoteFolder, bool) {
 	rel, err := filepath.Rel(v.root, abs)
 	if err != nil {
 		return "", false
 	}
-	return FolderForRelativePath(rel)
+	var paths map[string]string
+	if settings, err := v.GetSettings(); err == nil {
+		paths = settings.SystemFolderPaths
+	}
+	return FolderForRelativePathWithSettings(rel, paths)
 }
 
 // --- Create / Rename / Delete ---
@@ -1581,7 +1792,13 @@ func (v *Vault) CreateNote(folder NoteFolder, title, subpath string) (NoteMeta, 
 		return NoteMeta{}, err
 	}
 	abs := uniquePath(dir, title, ".md")
-	if err := os.WriteFile(abs, []byte(""), v.fileMode); err != nil {
+	// Seed the same `# Title` body the desktop app writes (main vault.ts and
+	// the MCP vault-ops both do), from the FINAL on-disk stem so a deduped
+	// "Title 2" heads itself correctly. A remote vault otherwise creates
+	// blank notes where a local one has its title, which is most visible on
+	// daily notes, whose date heading is the whole point.
+	stem := strings.TrimSuffix(filepath.Base(abs), ".md")
+	if err := os.WriteFile(abs, fmt.Appendf(nil, "# %s\n\n", stem), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
 	v.invalidateTextSearchCache()
@@ -2007,8 +2224,24 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 // --- Tasks ---
 
 func (v *Vault) ScanTasks() ([]Task, error) {
+	return v.ScanTasksWith(ParseTasksOptions{})
+}
+
+// ScanTasksWith is ScanTasks honoring options: IncludeExcluded scans past
+// both the vault-level excluded-folders list and the note-level frontmatter
+// `tasks:` opt-out (#458).
+func (v *Vault) ScanTasksWith(opts ParseTasksOptions) ([]Task, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	settings, err := v.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	excluded := tasksExcludedFolders(settings)
+	if opts.IncludeExcluded {
+		excluded = nil
+	}
+	hiddenRootNames := hiddenPrimaryRootNames(settings)
 	all := []Task{}
 	for _, folder := range []NoteFolder{FolderInbox, FolderQuick, FolderArchive} {
 		folderRoot, err := v.folderRoot(folder)
@@ -2024,13 +2257,14 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 				if strings.HasPrefix(d.Name(), ".") && path != folderRoot {
 					return filepath.SkipDir
 				}
-				if isFormDirName(d.Name()) {
-					return filepath.SkipDir // database folder — not loose notes
-				}
+				// Not skipped, for the same reason as ListNotes: a database's
+				// record pages are notes, and a task written in one counts. The
+				// desktop scans tasks straight off its note list, so skipping here
+				// would have the two disagree about what a note is (#527).
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-						if shouldHidePrimaryRootName(d.Name()) {
+						if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
 							return filepath.SkipDir
 						}
 					}
@@ -2040,7 +2274,7 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
 						return nil
 					}
 				}
@@ -2054,8 +2288,11 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 			}
 			rel, _ := filepath.Rel(v.root, path)
 			relPosix := filepath.ToSlash(rel)
+			if isPathExcludedFromTasks(relPosix, excluded) {
+				return nil
+			}
 			title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-			tasks := ParseTasks(relPosix, title, folder, string(body))
+			tasks := ParseTasksWith(relPosix, title, folder, string(body), opts)
 			all = append(all, tasks...)
 			return nil
 		})
@@ -2064,6 +2301,14 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 }
 
 func (v *Vault) ScanTasksForPath(rel string) ([]Task, error) {
+	return v.ScanTasksForPathWith(rel, ParseTasksOptions{})
+}
+
+// ScanTasksForPathWith is ScanTasksForPath honoring options. IncludeExcluded
+// scans past the excluded-folders list and the frontmatter `tasks:` opt-out
+// (never the trash gate): the remote task-toggle flow re-parses through here,
+// and an explicitly-named task id is an explicit ask.
+func (v *Vault) ScanTasksForPathWith(rel string, opts ParseTasksOptions) ([]Task, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	abs, err := SafeJoin(v.root, rel)
@@ -2074,9 +2319,27 @@ func (v *Vault) ScanTasksForPath(rel string) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	folder, _ := v.folderOf(abs)
+	// Same gates as the full scan, or a single-note rescan would resurrect
+	// tasks the walker skips: trashed and unclassifiable notes contribute
+	// nothing (mirrors the desktop's LIVE_FOLDERS check), and neither do notes
+	// under an excluded folder (#458). The caller uses the empty result to
+	// drop stale rows.
+	folder, ok := v.folderOf(abs)
+	if !ok || folder == FolderTrash {
+		return []Task{}, nil
+	}
+	relPosix := filepath.ToSlash(rel)
+	if !opts.IncludeExcluded {
+		settings, err := v.GetSettings()
+		if err != nil {
+			return nil, err
+		}
+		if isPathExcludedFromTasks(relPosix, tasksExcludedFolders(settings)) {
+			return []Task{}, nil
+		}
+	}
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
-	return ParseTasks(filepath.ToSlash(rel), title, folder, string(body)), nil
+	return ParseTasksWith(relPosix, title, folder, string(body), opts), nil
 }
 
 // --- Text search ---
@@ -2088,6 +2351,11 @@ func (v *Vault) SearchCapabilities() TextSearchCapabilities {
 func (v *Vault) textSearchFilesLocked() (uint64, []textSearchFile, error) {
 	h := fnv.New64a()
 	files := []textSearchFile{}
+	settings, err := v.GetSettings()
+	if err != nil {
+		return 0, nil, err
+	}
+	hiddenRootNames := hiddenPrimaryRootNames(settings)
 	for _, folder := range []NoteFolder{FolderInbox, FolderQuick, FolderArchive} {
 		folderRoot, err := v.folderRoot(folder)
 		if err != nil {
@@ -2107,7 +2375,7 @@ func (v *Vault) textSearchFilesLocked() (uint64, []textSearchFile, error) {
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == cleanFolderRoot {
-						if shouldHidePrimaryRootName(d.Name()) {
+						if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
 							return filepath.SkipDir
 						}
 					}
@@ -2117,7 +2385,7 @@ func (v *Vault) textSearchFilesLocked() (uint64, []textSearchFile, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == cleanFolderRoot {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
 						return nil
 					}
 				}
@@ -2251,12 +2519,16 @@ func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
 
 // --- Assets upload + raw serving ---
 
-// ImportAsset writes raw bytes into the vault root and returns the
-// markdown snippet to embed relative to the source note.
+// ImportAsset writes raw bytes into the unified assets/ folder and returns
+// the markdown snippet to embed relative to the source note. The destination
+// mirrors the desktop importFiles/importPastedImage (#377): uploads used to
+// land at the vault root, which in Vault Root mode dumped them right next to
+// the notes.
 func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (ImportedAsset, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if err := os.MkdirAll(v.root, v.dirMode); err != nil {
+	assetsAbs := filepath.Join(v.root, AssetsDir)
+	if err := os.MkdirAll(assetsAbs, v.dirMode); err != nil {
 		return ImportedAsset{}, err
 	}
 	safeName := sanitizeFileName(filename)
@@ -2265,7 +2537,7 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 	}
 	ext := filepath.Ext(safeName)
 	stem := strings.TrimSuffix(safeName, ext)
-	abs := uniquePath(v.root, stem, ext)
+	abs := uniquePath(assetsAbs, stem, ext)
 	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, v.fileMode)
 	if err != nil {
 		return ImportedAsset{}, err
@@ -2288,7 +2560,11 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 		_ = os.Remove(abs)
 		return ImportedAsset{}, err
 	}
-	rel := filepath.ToSlash(filepath.Base(abs))
+	relFromRoot, err := filepath.Rel(v.root, abs)
+	if err != nil {
+		return ImportedAsset{}, err
+	}
+	rel := filepath.ToSlash(relFromRoot)
 	noteDir := filepath.Dir(filepath.FromSlash(notePath))
 	if noteDir == "." {
 		noteDir = ""

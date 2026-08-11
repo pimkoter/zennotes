@@ -3,6 +3,7 @@ package vault
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Regexes below mirror the TS extractors in src/main/vault.ts. They are
@@ -16,7 +17,7 @@ var (
 	wikilinkRe    = regexp.MustCompile(`(!?)\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]`)
 	linkRe        = regexp.MustCompile(`(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
 	embedRe       = regexp.MustCompile(`!\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]`)
-	frontmatterRe = regexp.MustCompile(`(?s)\A---\n(.*?)\n---\n?`)
+	frontmatterRe = regexp.MustCompile(`(?s)\A---\r?\n(.*?)\r?\n---\r?\n?`)
 	headingRe     = regexp.MustCompile(`(?m)^#{1,6}\s+`)
 	imageMdRe     = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
 	mdLinkRe      = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
@@ -77,14 +78,33 @@ func stripCodeContent(body string) string {
 	return out
 }
 
-// ExtractTags returns unique #tags from a markdown body, ignoring code.
+// ExtractTags returns unique tags from first-class frontmatter `tags` and inline #tags.
 func ExtractTags(body string) []string {
-	if !strings.Contains(body, "#") {
-		return []string{}
-	}
-	stripped := stripCodeContent(body)
 	seen := map[string]bool{}
 	out := []string{}
+	if m := frontmatterRe.FindStringSubmatch(body); len(m) >= 2 {
+		fm := parseTaskFrontmatter(m[1])
+		for _, raw := range fm["tags"] {
+			// A bare scalar splits on commas and whitespace: `tags: daily, work`
+			// is two tags and a tag can contain neither. Kept in sync with
+			// frontmatterTags in packages/shared-domain/src/frontmatter.ts.
+			for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+				return r == ',' || unicode.IsSpace(r)
+			}) {
+				tag := strings.TrimPrefix(part, "#")
+				if tag != "" && !seen[tag] {
+					seen[tag] = true
+					out = append(out, tag)
+				}
+			}
+		}
+	}
+
+	markdownBody := frontmatterRe.ReplaceAllString(body, "")
+	if !strings.Contains(markdownBody, "#") {
+		return out
+	}
+	stripped := stripCodeContent(markdownBody)
 	for _, m := range tagRe.FindAllStringSubmatch(stripped, -1) {
 		if len(m) >= 2 {
 			tag := m[1]
@@ -230,7 +250,7 @@ func localAssetTargetKind(target string) string {
 // --- Task parsing (mirrors shared/tasks.ts parseTasksFromBody) ---
 
 var (
-	taskLineRe      = regexp.MustCompile(`^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X|>)\](.*)$`)
+	taskLineRe      = regexp.MustCompile(`^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X|>|-|/)\](.*)$`)
 	inlineDueRe     = regexp.MustCompile(`(?i)(?:^|\s)due:\s*(\S+)`)
 	inlinePriority  = regexp.MustCompile(`(?i)(?:^|\s)!(high|med|medium|low|h|m|l)\b`)
 	inlineWaitingRe = regexp.MustCompile(`(?i)(?:^|\s)@waiting\b`)
@@ -250,7 +270,10 @@ func normalizePriority(raw string) string {
 	switch v {
 	case "high", "h":
 		return "high"
-	case "med", "medium", "m":
+	// `normal` is the TaskNotes default priority; map it onto ZenNotes' `med`.
+	// The inline `!prio` regex never emits `normal`, so inline parsing is
+	// unaffected; only frontmatter file-tasks reach this arm.
+	case "med", "medium", "normal", "m":
 		return "med"
 	case "low", "l":
 		return "low"
@@ -259,17 +282,40 @@ func normalizePriority(raw string) string {
 }
 
 type noteDefaults struct {
-	Due      string
-	Priority string
-	Status   string
+	Due       string
+	Priority  string
+	Status    string
+	TasksMode string
+}
+
+// Note-level participation in the Tasks system, from the frontmatter `tasks:`
+// key (#458). Mirrors noteTasksMode in packages/shared-domain/src/tasks.ts;
+// keep the accepted values byte-identical. No runtime in this app types YAML
+// scalars, so `tasks: false` arrives as the string "false"; matching is exact
+// string comparison after lower-casing, anything unrecognized falls back to
+// "all" (the pre-#458 behavior).
+const (
+	tasksModeAll      = "all"
+	tasksModeNoteOnly = "note-only"
+	tasksModeNone     = "none"
+)
+
+func noteTasksMode(val string) string {
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "false", "off":
+		return tasksModeNone
+	case "note":
+		return tasksModeNoteOnly
+	}
+	return tasksModeAll
 }
 
 func parseNoteDefaults(body string) noteDefaults {
 	m := frontmatterRe.FindStringSubmatch(body)
 	if len(m) < 2 {
-		return noteDefaults{}
+		return noteDefaults{TasksMode: tasksModeAll}
 	}
-	var d noteDefaults
+	d := noteDefaults{TasksMode: tasksModeAll}
 	for _, line := range strings.Split(m[1], "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -292,6 +338,8 @@ func parseNoteDefaults(body string) noteDefaults {
 			}
 		case "status":
 			d.Status = strings.ToLower(val)
+		case "tasks":
+			d.TasksMode = noteTasksMode(val)
 		}
 	}
 	return d
@@ -308,13 +356,201 @@ func unquote(v string) string {
 	return t
 }
 
+// --- File tasks (TaskNotes-style: one task per note, metadata in frontmatter) ---
+
+// taskFileTag is the frontmatter tag that marks a whole note as a task
+// (TaskNotes convention, interoperable with TaskForge / Obsidian TaskNotes).
+const taskFileTag = "task"
+
+// doneStatuses are frontmatter `status:` values treated as complete (checked).
+var doneStatuses = map[string]bool{
+	"done": true, "complete": true, "completed": true, "x": true,
+}
+
+// cancelledStatuses are frontmatter `status:` values treated as cancelled (#450).
+var cancelledStatuses = map[string]bool{
+	"cancelled": true, "canceled": true,
+}
+
+// inProgressStatuses are frontmatter `status:` values treated as in progress
+// (#512). `in-progress` is TaskNotes' spelling; the rest are what people type
+// by hand. These stay open work, unlike done/cancelled.
+var inProgressStatuses = map[string]bool{
+	"in-progress": true, "in progress": true, "inprogress": true,
+	"doing": true, "started": true, "wip": true,
+}
+
+var (
+	taskFmListItemRe = regexp.MustCompile(`^\s*-\s+(.*)$`)
+	taskFmKvRe       = regexp.MustCompile(`^([A-Za-z0-9_][\w-]*)\s*:\s*(.*)$`)
+	taskFmLeadWsRe   = regexp.MustCompile(`^\s`)
+)
+
+// parseTaskFrontmatter parses a leading frontmatter block into flat fields,
+// handling scalars, inline arrays (`tags: [a, b]`) and block lists (`tags:`
+// then indented `  - a`). Keys are lower-cased; every value is stored as a
+// slice (a scalar becomes a single-element slice). Best-effort and never
+// panics: just enough YAML for task files, not a full parser. Mirrors
+// parseFrontmatterFields in packages/shared-domain/src/frontmatter.ts.
+func parseTaskFrontmatter(block string) map[string][]string {
+	data := map[string][]string{}
+	listKey := ""
+	for _, rawLine := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		item := taskFmListItemRe.FindStringSubmatch(rawLine)
+		if listKey != "" && taskFmLeadWsRe.MatchString(rawLine) && item != nil {
+			data[listKey] = append(data[listKey], unquote(item[1]))
+			continue
+		}
+		kv := taskFmKvRe.FindStringSubmatch(rawLine)
+		if kv == nil {
+			listKey = ""
+			continue
+		}
+		key := strings.ToLower(kv[1])
+		rest := strings.TrimSpace(kv[2])
+		if rest == "" {
+			// Bare key: a block list may follow on indented `- item` lines.
+			listKey = key
+			data[key] = []string{}
+			continue
+		}
+		listKey = ""
+		if strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]") {
+			var arr []string
+			for _, s := range strings.Split(rest[1:len(rest)-1], ",") {
+				v := unquote(s)
+				if v != "" {
+					arr = append(arr, v)
+				}
+			}
+			data[key] = arr
+		} else {
+			data[key] = []string{unquote(rest)}
+		}
+	}
+	return data
+}
+
+// firstScalar returns the first value of a frontmatter field, or "" when absent.
+func firstScalar(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
+}
+
+// normalizeDueDate unquotes/trims a frontmatter date and returns it only when it
+// is a valid YYYY-MM-DD string, otherwise "". Reuses the same validation the
+// inline due parser uses.
+func normalizeDueDate(raw string) string {
+	v := unquote(strings.TrimSpace(raw))
+	if isValidIsoDate(v) {
+		return v
+	}
+	return ""
+}
+
+// parseTaskFile returns a whole-note "file task" when body has a leading
+// frontmatter block whose `tags` include `task`, and ok=false otherwise. All
+// metadata comes from frontmatter; the note body is free-form. Mirrors
+// parseTaskFile in packages/shared-domain/src/tasks.ts. `body` is expected to
+// already be newline-normalized by the caller.
+func parseTaskFile(path, title string, folder NoteFolder, body string) (Task, bool) {
+	m := frontmatterRe.FindStringSubmatch(body)
+	if len(m) < 2 {
+		return Task{}, false
+	}
+	fm := parseTaskFrontmatter(m[1])
+
+	tags := []string{}
+	hasTaskTag := false
+	for _, t := range fm["tags"] {
+		tag := strings.ToLower(strings.TrimPrefix(t, "#"))
+		if tag == taskFileTag {
+			hasTaskTag = true
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	if !hasTaskTag {
+		return Task{}, false
+	}
+
+	status := "open"
+	if s := firstScalar(fm["status"]); s != "" {
+		status = strings.ToLower(s)
+	}
+	content := title
+	if t := strings.TrimSpace(firstScalar(fm["title"])); t != "" {
+		content = t
+	}
+
+	return Task{
+		ID:            path + "#task",
+		SourcePath:    path,
+		NoteTitle:     title,
+		NoteFolder:    folder,
+		LineNumber:    0,
+		TaskIndex:     -1,
+		RawText:       "",
+		Content:       content,
+		Checked:       doneStatuses[status],
+		Cancelled:     cancelledStatuses[status],
+		InProgress:    inProgressStatuses[status],
+		Due:           normalizeDueDate(firstScalar(fm["due"])),
+		Priority:      normalizePriority(firstScalar(fm["priority"])),
+		Waiting:       status == "waiting",
+		Tags:          tags,
+		Kind:          "file",
+		Scheduled:     normalizeDueDate(firstScalar(fm["scheduled"])),
+		CompletedDate: normalizeDueDate(firstScalar(fm["completeddate"])),
+	}, true
+}
+
+// ParseTasksOptions controls scanning past task exclusions (#458).
+type ParseTasksOptions struct {
+	// IncludeExcluded scans past the note-level frontmatter `tasks:` opt-out:
+	// the GET /tasks?includeExcluded=1 escape hatch. Default listing never sets
+	// it.
+	IncludeExcluded bool
+}
+
 // ParseTasks walks a markdown body and returns every checkbox task.
 func ParseTasks(path, title string, folder NoteFolder, body string) []Task {
+	return ParseTasksWith(path, title, folder, body, ParseTasksOptions{})
+}
+
+// ParseTasksWith is ParseTasks honoring options. The frontmatter `tasks:`
+// gate lives here rather than in the parse helpers (the TS mirrors gate
+// inside parseTaskFile/parseTasksFromBody because their callers invoke the
+// two separately); the semantics are identical: `tasks: false`/`off` emits
+// nothing and wins over `tags: [task]`, `tasks: note` keeps only the file
+// task, anything else emits everything.
+func ParseTasksWith(path, title string, folder NoteFolder, body string, opts ParseTasksOptions) []Task {
 	normalized := strings.ReplaceAll(body, "\r\n", "\n")
 	defaults := parseNoteDefaults(normalized)
 	lines := strings.Split(normalized, "\n")
 
+	mode := defaults.TasksMode
+	if opts.IncludeExcluded {
+		mode = tasksModeAll
+	}
+
 	out := []Task{}
+	// A whole-note "file task" (if the frontmatter is tagged `task`) is emitted
+	// before the inline checkbox tasks in the same note, which act as subtasks.
+	if mode != tasksModeNone {
+		if fileTask, ok := parseTaskFile(path, title, folder, normalized); ok {
+			out = append(out, fileTask)
+		}
+	}
+	if mode != tasksModeAll {
+		return out
+	}
 	taskIndex := 0
 	inFence := false
 	fenceMarker := ""
@@ -343,6 +579,8 @@ func ParseTasks(path, title string, folder NoteFolder, body string) []Task {
 		checkedChar := m[2]
 		tail := strings.TrimPrefix(m[3], "]")
 		checked := checkedChar == "x" || checkedChar == "X"
+		cancelled := checkedChar == "-"
+		inProgress := checkedChar == "/"
 
 		due := ""
 		priority := ""
@@ -402,6 +640,8 @@ func ParseTasks(path, title string, folder NoteFolder, body string) []Task {
 			RawText:    line,
 			Content:    content,
 			Checked:    checked,
+			Cancelled:  cancelled,
+			InProgress: inProgress,
 			Due:        due,
 			Priority:   priority,
 			Waiting:    waiting,

@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import type { CliInstallStatus } from '@shared/ipc'
+import { resolveLoginShellPathDirs } from './login-shell-path'
 
 const execFileAsync = promisify(execFile)
 
@@ -96,7 +97,7 @@ async function ensureDevWrapper(cliJsPath: string): Promise<string> {
  * dirs come first so we never reach for sudo when something nearby
  * already works.
  */
-function candidateDirs(): string[] {
+async function candidateDirs(): Promise<string[]> {
   const home = os.homedir()
   const seen = new Set<string>()
   const out: string[] = []
@@ -114,21 +115,31 @@ function candidateDirs(): string[] {
   // language toolchains (~/.cargo/bin, ~/go/bin, ~/.nvm/.../bin) are
   // common. Add them at the end so they're considered after the
   // conventional homes.
-  const pathDirs = (process.env.PATH ?? '')
-    .split(path.delimiter)
-    .map((p) => p.trim())
-    .filter(Boolean)
-  for (const dir of pathDirs) push(dir)
+  for (const dir of await userPathDirs()) push(dir)
   return out
 }
 
-function pathDirsOnPath(): Set<string> {
+/**
+ * The PATH entries that matter here, which is the user's, not this process's.
+ *
+ * Both are used: the login shell's PATH answers "will `zn` be callable in a
+ * terminal?", and this process's own PATH is kept as a fallback for the case
+ * where no shell answers (and because a terminal-launched app already has the
+ * right one). Reading only `process.env.PATH` is what made a Finder-launched
+ * app on macOS insist `~/.local/bin` was missing from a PATH that had it (#528):
+ * launchd hands GUI apps a minimal PATH and never sources the user's profile.
+ */
+async function userPathDirs(): Promise<string[]> {
+  const fromLoginShell = await resolveLoginShellPathDirs().catch(() => [] as string[])
+  const fromProcess = (process.env.PATH ?? '').split(path.delimiter)
+  return [...fromLoginShell, ...fromProcess].map((entry) => entry.trim()).filter(Boolean)
+}
+
+async function pathDirsOnPath(): Promise<Set<string>> {
   const out = new Set<string>()
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    const trimmed = dir.trim()
-    if (!trimmed) continue
+  for (const dir of await userPathDirs()) {
     try {
-      out.add(path.resolve(trimmed))
+      out.add(path.resolve(dir))
     } catch {
       /* skip malformed PATH entries */
     }
@@ -160,9 +171,9 @@ interface InstallTarget {
 }
 
 async function pickInstallTarget(): Promise<InstallTarget> {
-  const onPath = pathDirsOnPath()
+  const onPath = await pathDirsOnPath()
   const home = os.homedir()
-  const candidates = candidateDirs()
+  const candidates = await candidateDirs()
 
   // Pass 1: a candidate that is BOTH on PATH AND user-writable.
   // This is the no-sudo, no-shell-edit happy path.
@@ -233,11 +244,12 @@ interface ExistingInstall {
   installedByThisApp: boolean
 }
 
-async function findExistingInstall(
+async function findInstallByName(
+  name: string,
   wrapper: WrapperLocation | null
 ): Promise<ExistingInstall | null> {
-  for (const dir of candidateDirs()) {
-    const candidate = path.join(dir, CLI_NAME)
+  for (const dir of await candidateDirs()) {
+    const candidate = path.join(dir, name)
     try {
       const linkTarget = await fsp.readlink(candidate)
       const resolved = path.isAbsolute(linkTarget)
@@ -258,6 +270,67 @@ async function findExistingInstall(
       }
       // ENOENT or permission errors — keep searching.
     }
+  }
+  return null
+}
+
+/**
+ * The install the status read reports: `zn` wherever it is, and failing that a
+ * ZenNotes-managed legacy `zen` (#126). The legacy pass is managed-only on
+ * purpose: a foreign `zen` on PATH is Zen Browser, not an install of ours, and
+ * reporting it would tell a browser user their CLI is installed. Without the
+ * legacy pass, everyone who installed on ≤2.9.0 reads as "not installed"
+ * forever while their old symlink keeps working — the exact state that hid the
+ * rename from them.
+ */
+async function findExistingInstall(
+  wrapper: WrapperLocation | null
+): Promise<ExistingInstall | null> {
+  const current = await findInstallByName(CLI_NAME, wrapper)
+  if (current) return current
+  for (const legacy of LEGACY_CLI_NAMES) {
+    const found = await findInstallByName(legacy, wrapper)
+    if (found?.installedByThisApp) return found
+  }
+  return null
+}
+
+/**
+ * Heal a pre-2.10 install on launch: users who ran the installer when the
+ * command was `zen` and never re-ran it have a working managed `zen` and no
+ * `zn` at all, because the rename only ever migrated inside an explicit
+ * Install click (#126). Writes `zn` beside the managed legacy link, then
+ * removes the legacy name — the same two steps Install performs, minus the
+ * click nobody had a reason to make.
+ *
+ * A cheap no-op in every other state: any `zn` on PATH (ours or foreign) means
+ * nothing to do, and a foreign `zen` (Zen Browser) is never touched. Returns
+ * the new link path, or null when nothing was migrated.
+ */
+export async function migrateLegacyCliLink(
+  wrapperOverride?: WrapperLocation | null
+): Promise<string | null> {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') return null
+  const wrapper = wrapperOverride === undefined ? await locateWrapper() : wrapperOverride
+  if (!wrapper) return null
+  // Any existing `zn` wins, even a foreign one: creating a second `zn`
+  // elsewhere on PATH would shadow-fight it, which is the confusion the
+  // rename existed to end.
+  if (await findInstallByName(CLI_NAME, wrapper)) return null
+
+  for (const legacy of LEGACY_CLI_NAMES) {
+    const found = await findInstallByName(legacy, wrapper)
+    if (!found?.installedByThisApp) continue
+    const linkPath = path.join(path.dirname(found.linkPath), CLI_NAME)
+    try {
+      await writeSymlink(wrapper.wrapperPath, linkPath)
+    } catch {
+      // A read-only bin dir at launch is not worth a dialog; the explicit
+      // Install path still exists and can elevate.
+      return null
+    }
+    await removeManagedLinks(LEGACY_CLI_NAMES, wrapper)
+    return linkPath
   }
   return null
 }
@@ -318,7 +391,7 @@ export async function removeManagedLinks(
   wrapper: WrapperLocation | null
 ): Promise<string[]> {
   const removed: string[] = []
-  for (const dir of candidateDirs()) {
+  for (const dir of await candidateDirs()) {
     for (const name of names) {
       const candidate = path.join(dir, name)
       try {
@@ -361,7 +434,7 @@ export async function installCli(): Promise<CliInstallStatus> {
   if (existing && existing.installedByThisApp) {
     target = {
       linkPath: existing.linkPath,
-      onPath: pathDirsOnPath().has(path.dirname(existing.linkPath)),
+      onPath: (await pathDirsOnPath()).has(path.dirname(existing.linkPath)),
       requiresSudo: !(await isWritableDir(path.dirname(existing.linkPath))),
       pathHint: null
     }

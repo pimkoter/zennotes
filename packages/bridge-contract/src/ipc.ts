@@ -5,6 +5,7 @@ export const IPC = {
   WORKSPACE_GET_INFO: 'workspace:get-info',
   WORKSPACE_CONNECT_REMOTE: 'workspace:connect-remote',
   WORKSPACE_DISCONNECT_REMOTE: 'workspace:disconnect-remote',
+  WORKSPACE_RETRY_BOOT: 'workspace:retry-boot',
   WORKSPACE_LIST_REMOTE_PROFILES: 'workspace:list-remote-profiles',
   WORKSPACE_SAVE_REMOTE_PROFILE: 'workspace:save-remote-profile',
   WORKSPACE_DELETE_REMOTE_PROFILE: 'workspace:delete-remote-profile',
@@ -26,6 +27,15 @@ export const IPC = {
   VAULT_HAS_ASSETS_DIR: 'vault:has-assets-dir',
   VAULT_GENERATE_DEMO_TOUR: 'vault:generate-demo-tour',
   VAULT_REMOVE_DEMO_TOUR: 'vault:remove-demo-tour',
+  VAULT_LIST_WORKFLOWS: 'vault:list-workflows',
+  VAULT_APPLY_WORKFLOW: 'vault:apply-workflow',
+  VAULT_UNDO_WORKFLOW_RUN: 'vault:undo-workflow-run',
+  VAULT_LIST_WORKFLOW_RUNS: 'vault:list-workflow-runs',
+  VAULT_DELETE_WORKFLOW_RUNS: 'vault:delete-workflow-runs',
+  VAULT_WRITE_WORKFLOW: 'vault:write-workflow',
+  VAULT_DELETE_WORKFLOW: 'vault:delete-workflow',
+  VAULT_EXPORT_WORKFLOW: 'vault:export-workflow',
+  VAULT_IMPORT_WORKFLOW_FILE: 'vault:import-workflow-file',
   VAULT_LIST_TEMPLATES: 'vault:list-templates',
   VAULT_READ_TEMPLATE: 'vault:read-template',
   VAULT_WRITE_TEMPLATE: 'vault:write-template',
@@ -49,6 +59,7 @@ export const IPC = {
   VAULT_UNARCHIVE_NOTE: 'vault:unarchive-note',
   VAULT_DUPLICATE_NOTE: 'vault:duplicate-note',
   VAULT_EXPORT_NOTE_PDF: 'vault:export-note-pdf',
+  VAULT_EXPORT_NOTE_DOCX: 'vault:export-note-docx',
   VAULT_REVEAL_NOTE: 'vault:reveal-note',
   VAULT_REVEAL_NOTE_TARGET: 'vault:reveal-note-target',
   VAULT_MOVE_NOTE: 'vault:move-note',
@@ -68,6 +79,9 @@ export const IPC = {
   VAULT_DUPLICATE_FOLDER: 'vault:duplicate-folder',
   VAULT_REVEAL_FOLDER: 'vault:reveal-folder',
   VAULT_REVEAL_FILE_PATH: 'vault:reveal-file-path',
+  VAULT_OPEN_EXTERNAL_FILE: 'vault:open-external-file',
+  VAULT_OPEN_ASSET_EXTERNALLY: 'vault:open-asset-externally',
+  VAULT_FETCH_LINK_METADATA: 'vault:fetch-link-metadata',
   VAULT_REVEAL_FOLDER_TARGET: 'vault:reveal-folder-target',
   VAULT_REVEAL_ASSETS_DIR: 'vault:reveal-assets-dir',
   VAULT_SCAN_TASKS: 'vault:scan-tasks',
@@ -109,6 +123,7 @@ export const IPC = {
   APP_WRITE_EXTERNAL_FILE: 'app:write-external-file',
   APP_MOVE_EXTERNAL_FILE_TO_VAULT: 'app:move-external-file-to-vault',
   APP_OPEN_MARKDOWN_FILE: 'app:open-markdown-file',
+  APP_OPEN_FILE_DIALOG: 'app:open-file-dialog',
   APP_OPEN_FOLDER_TEMPORARY: 'app:open-folder-temporary',
   TIKZ_RENDER: 'tikz:render',
   MCP_STATUS: 'mcp:status',
@@ -133,6 +148,12 @@ export const IPC = {
   CUSTOM_THEMES_DELETE: 'custom-themes:delete',
   CUSTOM_THEMES_CREATE: 'custom-themes:create',
   CUSTOM_THEMES_ON_CHANGE: 'custom-themes:on-change',
+  CUSTOM_CODE_LANGUAGES_LIST: 'custom-code-languages:list',
+  CUSTOM_CODE_LANGUAGES_INSTALL: 'custom-code-languages:install',
+  CUSTOM_CODE_LANGUAGES_UPDATE: 'custom-code-languages:update',
+  CUSTOM_CODE_LANGUAGES_REVEAL: 'custom-code-languages:reveal',
+  CUSTOM_CODE_LANGUAGES_DELETE: 'custom-code-languages:delete',
+  CUSTOM_CODE_LANGUAGES_ON_CHANGE: 'custom-code-languages:on-change',
   OVERRIDES_LIST: 'overrides:list',
   OVERRIDES_REVEAL: 'overrides:reveal',
   OVERRIDES_DELETE: 'overrides:delete',
@@ -370,11 +391,13 @@ export interface MonthlyNotesSettings {
  */
 export interface VaultViewSettings {
   noteSortOrder?: string
+  assetSortOrder?: string
   groupByKind?: boolean
   tasksViewMode?: string
   kanbanGroupBy?: string
   kanbanColumnTitles?: Record<string, string>
   kanbanColumnOrder?: Record<string, string[]>
+  kanbanCardOrder?: Record<string, string[]>
   kanbanStatuses?: string[]
   autoReveal?: boolean
   systemFolderLabels?: Record<string, unknown>
@@ -391,6 +414,9 @@ export interface VaultSettings {
   drawingsLocation?: FileLocationSetting
   /** Where new databases are created; absent means the default (`primary`). (#362) */
   databasesLocation?: FileLocationSetting
+  /** Where new task files (`#task`-tagged notes) are created; absent means the
+   *  default (`primary`, i.e. the inbox). */
+  tasksLocation?: FileLocationSetting
   /** Per-vault view overrides (#292); absent/empty means "inherit global". */
   view?: VaultViewSettings
   folderIcons: Record<string, FolderIconId>
@@ -404,6 +430,33 @@ export interface VaultSettings {
    * distinguishable. Order is the display order in the Favorites section.
    */
   favorites: string[]
+  /**
+   * Per-system-folder on-disk path overrides (#115). Maps internal folder IDs
+   * to vault-relative directory names (e.g. `{ inbox: '01 - Entry', archive: 'Archive' }`).
+   * Absent entries fall back to the default folder name (same as the ID).
+   * Notes stored in remapped folders retain their vault-relative paths as-is
+   * (e.g. `01 - Entry/Projects/Idea.md`), while `NoteMeta.folder` remains the
+   * internal ID (`inbox`).
+   */
+  systemFolderPaths?: Partial<Record<NoteFolder, string>>
+  /**
+   * Tasks-system settings (#458). `excludedFolders` lists vault-relative
+   * directory paths (as they exist on disk) whose notes never feed the Tasks
+   * surfaces, on any runtime. Absent means nothing is excluded. An object
+   * rather than a bare list so the deferred per-vault `mode: all | tagged`
+   * can land beside it without another migration.
+   */
+  tasks?: { excludedFolders?: string[] }
+  /**
+   * Typst preamble settings (#486, #562). `folder` names the directory whose
+   * notes are Typst preambles, matched at any depth; absent means `typst`.
+   * Those notes are Typst source rather than prose, so no scanner reads their
+   * `#let` / `#var` tokens as tags on any runtime. Configurable so a vault that
+   * already keeps ordinary notes in a folder called `typst` can move the
+   * preambles instead of losing those notes' tags. An object rather than a bare
+   * string so later preamble settings land beside it without another migration.
+   */
+  typstPreambles?: { folder?: string }
 }
 
 export const DEFAULT_DAILY_NOTES_DIRECTORY = 'Daily Notes'
@@ -440,9 +493,11 @@ export const DEFAULT_VAULT_SETTINGS: VaultSettings = {
   },
   drawingsLocation: { mode: 'primary' },
   databasesLocation: { mode: 'primary' },
+  tasksLocation: { mode: 'primary' },
   folderIcons: {},
   folderColors: {},
-  favorites: []
+  favorites: [],
+  systemFolderPaths: {}
 }
 
 export interface NoteMeta {
@@ -606,6 +661,22 @@ export interface VaultInfo {
   temporary?: boolean
 }
 
+/** Open-graph-ish metadata for a URL, used to render a bookmark card. All
+ *  fields but `url` are best-effort; `ok: false` means the fetch failed and the
+ *  card should fall back to just the link. */
+export interface LinkMetadata {
+  url: string
+  ok: boolean
+  title?: string
+  description?: string
+  /** Preview image URL (absolute). */
+  image?: string
+  /** Favicon URL (absolute). */
+  favicon?: string
+  /** Human site name, e.g. "GitHub". */
+  siteName?: string
+}
+
 /** A markdown file opened from outside any vault (standalone editor window). */
 export interface ExternalFileContent {
   /** Absolute path on disk. */
@@ -636,6 +707,14 @@ export interface ServerCapabilities {
   supportsVaultSelection: boolean
   supportsDirectoryBrowsing: boolean
   supportsWatch: boolean
+  /** The server answers 404 (not 500) for a file that is not there. Optional
+   *  because no server before 2.20.2 said so, and its ABSENCE is the useful
+   *  half: it marks the servers whose 500 might only mean "missing". */
+  reportsMissingAsNotFound?: boolean
+  /** The full asset mutation family incl. the deleted-assets store
+   *  (delete/duplicate/restore/purge). Absent on servers before 2.24, which
+   *  is what turns a bare 404 into a "server needs an update" message. */
+  supportsAssetOps?: boolean
 }
 
 export interface ServerSessionStatus {
@@ -652,6 +731,11 @@ export interface RemoteWorkspaceInfo {
   authConfigured: boolean
   capabilities: ServerCapabilities | null
   profileId: string | null
+  /** Why the configured remote workspace failed to connect at boot, or null
+   *  when it connected (or was never tried). Lets the renderer show a
+   *  reconnect screen instead of the first-boot Welcome (a configured
+   *  workspace that is unreachable is not the same as no workspace). */
+  bootError: string | null
 }
 
 export interface RemoteWorkspaceProfile {
@@ -701,7 +785,17 @@ export interface FolderEntry {
 }
 
 export type VaultChangeKind = 'add' | 'change' | 'unlink'
-export type VaultChangeScope = 'content' | 'vault-settings' | 'comments' | 'database' | 'folder'
+/** `resync` is synthesized client-side after a change-feed gap (a dropped
+ *  watch socket that reconnected): anything may have happened while the feed
+ *  was down, so the renderer re-pulls every surface the feed keeps fresh.
+ *  Servers never emit it. */
+export type VaultChangeScope =
+  | 'content'
+  | 'vault-settings'
+  | 'comments'
+  | 'database'
+  | 'folder'
+  | 'resync'
 
 export interface VaultChangeEvent {
   kind: VaultChangeKind

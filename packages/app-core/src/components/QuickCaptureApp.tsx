@@ -46,6 +46,7 @@ import { registerDisplayLineMotion } from '../lib/cm-vim-display-line'
 import { toggleWrap, wrapLink } from '../lib/cm-format'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { resolveCodeLanguage } from '../lib/cm-code-languages'
+import { customCodeFenceHighlightExtension } from '../lib/cm-custom-code-languages'
 import { markdownListIndentPlugin } from '../lib/cm-markdown-list-indent'
 import { appMarkdownSnippetExtension } from '../lib/markdown-snippets-config'
 import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle } from '@codemirror/language'
@@ -54,10 +55,9 @@ import { searchKeymap } from '@codemirror/search'
 import {
   autocompletion,
   closeCompletion,
-  completionKeymap,
   completionStatus
 } from '@codemirror/autocomplete'
-import { completionNavKeymap } from '../lib/cm-completion-nav'
+import { completionKeymapForEditor, completionNavKeymap } from '../lib/cm-completion-nav'
 import { slashCommandRender, templateSlashCommandSource } from '../lib/cm-slash-commands'
 import { calloutTypeSource } from '../lib/cm-callouts'
 import type { NoteMeta } from '@shared/ipc'
@@ -77,6 +77,8 @@ import { applyVimInsertEscape } from '../lib/vim-insert-escape'
 import { isPaletteNextKey, isPalettePreviousKey } from '../lib/palette-nav'
 import { isImeComposing } from '../lib/ime'
 import { PinIcon } from './icons'
+import { headingFolding } from '../lib/cm-heading-fold'
+import { editorTabSize, normalizeEditorTabSize } from '../lib/editor-tab-size'
 
 const PREFS_KEY = 'zen:prefs:v2'
 
@@ -88,6 +90,8 @@ interface QuickCapturePrefs {
   themeMode: ThemeMode
   editorFontSize: number
   editorLineHeight: number
+  editorTabSize: number
+  showHeadingLevelLabels: boolean
   interfaceFont: string | null
   textFont: string | null
   monoFont: string | null
@@ -102,6 +106,8 @@ function loadPrefs(): QuickCapturePrefs {
     themeMode: 'dark',
     editorFontSize: 15,
     editorLineHeight: 1.6,
+    editorTabSize: 4,
+    showHeadingLevelLabels: false,
     interfaceFont: null,
     textFont: null,
     monoFont: null
@@ -114,7 +120,8 @@ function loadPrefs(): QuickCapturePrefs {
       ...fallback,
       ...parsed,
       themeFamily: (parsed.themeFamily as ThemeFamily) ?? fallback.themeFamily,
-      themeMode: (parsed.themeMode as ThemeMode) ?? fallback.themeMode
+      themeMode: (parsed.themeMode as ThemeMode) ?? fallback.themeMode,
+      editorTabSize: normalizeEditorTabSize(parsed.editorTabSize)
     }
   } catch {
     return fallback
@@ -449,17 +456,23 @@ export function QuickCaptureApp(): JSX.Element {
           ),
           history(),
           drawSelection(),
+          editorTabSize(prefs.editorTabSize),
           highlightActiveLine(),
           EditorView.lineWrapping,
           markdown({ base: markdownLanguage, codeLanguages: resolveCodeLanguage, addKeymap: false }),
+          customCodeFenceHighlightExtension,
           vimAwareMarkdownKeymap,
           markdownListIndentPlugin,
+          headingFolding({ showLevelLabels: prefs.showHeadingLevelLabels }),
           syntaxHighlighting(captureHighlight),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           placeholder('Start writing…'),
           // Notion-style `/` slash commands — same block inserters as the main
           // editor, minus the store-dependent "Page" (no active note here). (#182)
           autocompletion({
+            // See EditorPane: skip the stock keymap so mac `Alt-`` / `Alt-i`
+            // don't swallow those characters on AltGr-style layouts (#429).
+            defaultKeymap: false,
             override: [templateSlashCommandSource, calloutTypeSource],
             addToOptions: [{ render: slashCommandRender.render, position: 0 }],
             icons: false,
@@ -486,7 +499,7 @@ export function QuickCaptureApp(): JSX.Element {
           ),
           keymap.of([
             indentWithTab,
-            ...completionKeymap,
+            ...completionKeymapForEditor,
             ...vimAwareDefaultKeymap(prefs.vimMode),
             ...historyKeymap,
             ...searchKeymap
