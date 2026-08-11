@@ -4,128 +4,97 @@
   pkgs,
   ...
 }:
-with lib; let
+
+let
   cfg = config.services.zennotes;
-in {
+in
+{
   options.services.zennotes = {
-    enable = mkEnableOption "ZenNotes self-hosted server";
+    enable = lib.mkEnableOption "ZenNotes self-hosted server";
 
-    package = mkOption {
-      type = types.package;
-      default = pkgs.callPackage ./package-server.nix {};
-      description = "The zennotes server package to use.";
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.callPackage ./package-server.nix { };
     };
 
-    dataDir = mkOption {
-      type = types.str;
+    dataDir = lib.mkOption {
+      type = lib.types.path;
       default = "/var/lib/zennotes";
-      description = "Directory to store server data and auth tokens.";
     };
 
-    vaultPath = mkOption {
-      type = types.str;
+    vaultPath = lib.mkOption {
+      type = lib.types.path;
       default = "/var/lib/zennotes/vault";
-      description = "Path to the markdown vault directory.";
     };
 
-    openFirewall = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Whether to open the port in the firewall.";
-    };
-
-    port = mkOption {
-      type = types.port;
+    port = lib.mkOption {
+      type = lib.types.port;
       default = 7878;
-      description = "Port the ZenNotes server listens on.";
     };
 
-    bindAddress = mkOption {
-      type = types.str;
+    bindAddress = lib.mkOption {
+      type = lib.types.str;
       default = "127.0.0.1";
-      description = "Address the server binds to.";
     };
 
-    extraEnvironment = mkOption {
-      type = types.attrsOf types.str;
-      default = {};
-      description = "Extra environment variables for the ZenNotes server.";
+    openFirewall = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
     };
 
-    settings = mkOption {
-      type = types.submodule {
-        freeformType = (pkgs.formats.toml {}).type;
-      };
-      default = {};
-      description = ''
-        Declarative settings for ZenNotes. Translated directly into config.toml.
-      '';
+    extraEnvironment = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
     };
   };
 
-  config = mkIf cfg.enable (
-    let
-      configFile = (pkgs.formats.toml {}).generate "config.toml" cfg.settings;
-    in {
-      users.users.zennotes = {
-        isSystemUser = true;
-        group = "zennotes";
-        description = "ZenNotes server user";
-        home = cfg.dataDir;
-      };
-      users.groups.zennotes = {};
+  config = lib.mkIf cfg.enable {
+    users.users.zennotes = {
+      isSystemUser = true;
+      group = "zennotes";
+      home = cfg.dataDir;
+    };
 
-      systemd.services.zennotes = {
-        description = "ZenNotes Self-Hosted Markdown Server";
-        wantedBy = ["multi-user.target"];
-        after = ["network.target"];
+    users.groups.zennotes = { };
 
-        serviceConfig = {
-          Type = "simple";
-          User = "zennotes";
-          Group = "zennotes";
-          WorkingDirectory = cfg.dataDir;
-          ExecStart = "${cfg.package}/bin/zennotes-server";
-          Restart = "on-failure";
+    systemd.services.zennotes = {
+      description = "ZenNotes Self-Hosted Server";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
 
-          # Automatically manages /var/lib/zennotes and its subdirectories
-          # creating them with correct permissions before applying systemd isolation.
-          StateDirectory = [
-            "zennotes"
-            "zennotes/vault"
-          ];
+      serviceConfig = {
+        Type = "simple";
 
-          # Security hardening options
-          ProtectSystem = "strict";
-          ProtectHome = true;
-          NoNewPrivileges = true;
+        User = "zennotes";
+        Group = "zennotes";
 
-          # Allow full read/write access to both the data directory and vault path
-          ReadWritePaths = [
-            cfg.dataDir
-            cfg.vaultPath
-          ];
-        };
+        WorkingDirectory = cfg.dataDir;
 
-        # Use cp --no-preserve=mode to make sure the copied file isn't read-only like the store original
-        preStart = ''
-          if [ ! -f "${cfg.dataDir}/config.toml" ]; then
-            cp --no-preserve=mode ${configFile} "${cfg.dataDir}/config.toml"
-            chmod 0640 "${cfg.dataDir}/config.toml"
-          fi
-        '';
+        ExecStart = "${cfg.package}/bin/zennotes-server";
 
-        environment =
-          {
-            PORT = toString cfg.port;
-            ZENNOTES_BIND = "${cfg.bindAddress}:${toString cfg.port}";
-            ZENNOTES_DEFAULT_VAULT_PATH = cfg.vaultPath;
-            ZENNOTES_CONFIG_PATH = "${cfg.dataDir}/config.toml";
-          }
-          // cfg.extraEnvironment;
+        Restart = "on-failure";
+        RestartSec = "5s";
+
+        StateDirectory = "zennotes";
+
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        NoNewPrivileges = true;
+
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.vaultPath
+        ];
       };
 
-      networking.firewall.allowedTCPPorts = mkIf cfg.openFirewall [cfg.port];
-    }
-  );
+      environment = {
+        PORT = toString cfg.port;
+        ZENNOTES_AUTH_TOKEN = "12345";
+      }
+      // cfg.extraEnvironment;
+    };
+
+    networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
+  };
 }
